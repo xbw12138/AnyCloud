@@ -938,13 +938,28 @@ void FileListPage::promptMakeDir() {
             if (name.empty()) return;
             this->provider->makeDir(
                 this->pathStack.back().first, name,
-                [this, alive = this->alive](const std::string& error) {
-                    brls::sync([this, alive, error] {
+                [this, alive = this->alive, name](const std::string& error) {
+                    brls::sync([this, alive, error, name] {
                         if (!*alive) return;
-                        if (!error.empty())
+                        if (!error.empty()) {
                             brls::Application::notify(error);
-                        else
+                            return;
+                        }
+                        this->refresh();
+                        // The listing can lag behind the create call, so check
+                        // once more and reload if the new folder is missing.
+                        auto alive = this->alive;
+                        brls::delay(900, [this, alive, name] {
+                            if (!*alive) return;
+                            auto* source =
+                                (FileListDataSource*)this->dataSource;
+                            for (const auto& file : source->files) {
+                                if (file.isDir && file.name == name) return;
+                            }
+                            listLog("list: mkdir retry, '" + name +
+                                    "' missing from listing");
                             this->refresh();
+                        });
                     });
                 });
         },
