@@ -6,6 +6,7 @@
 
 #include <cstdio>
 
+#include "cloud/drive/playback_store.hpp"
 #include "nxkit/utils/number_helper.hpp"
 
 #ifdef NXKIT_WITH_MPV
@@ -64,6 +65,8 @@ PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
 #ifdef NXKIT_WITH_MPV
     this->mpvAvailable = true;
 #endif
+    // Continue where the previous session stopped.
+    this->resumePosition = PlaybackStore::instance().position(this->file.id);
 
     if (this->isAudio) {
         // Centered music layout.
@@ -171,6 +174,8 @@ PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
     this->registerAction(
         "", brls::BUTTON_B,
         [this](brls::View*) -> bool {
+            // Remember the position before tearing the player down.
+            this->savePosition();
             auto& mpv = nxkit::MPVCore::instance();
             mpv.stop();
             mpv.reset();
@@ -202,6 +207,7 @@ PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
 
 PlayerPage::~PlayerPage() {
     *this->alive = false;
+    this->savePosition();
 #ifdef NXKIT_WITH_MPV
     auto& mpv = nxkit::MPVCore::instance();
     mpv.getEvent()->unsubscribe(this->eventSub);
@@ -316,15 +322,30 @@ void PlayerPage::onMpvEvent(int event) {
             this->loadingLabel->setVisibility(brls::Visibility::VISIBLE);
             break;
         case MpvEventEnum::LOADING_END:
-        case MpvEventEnum::MPV_LOADED:
             this->loadingLabel->setVisibility(brls::Visibility::GONE);
             break;
+        case MpvEventEnum::MPV_LOADED: {
+            this->loadingLabel->setVisibility(brls::Visibility::GONE);
+            // The stream is seekable now: jump to the remembered position.
+            if (this->resumePosition > 0) {
+                auto& mpv = nxkit::MPVCore::instance();
+                int64_t target = (int64_t)this->resumePosition;
+                this->resumePosition = 0;
+                logDebug("player: resume at " + std::to_string(target));
+                mpv.seek(target);
+                mpv.showOsdText("cloud/player/resume"_i18n + " " +
+                                wiliwili::sec2Time(target));
+            }
+            break;
+        }
         case MpvEventEnum::MPV_FILE_ERROR:
             this->loadingLabel->setVisibility(brls::Visibility::VISIBLE);
             this->loadingLabel->setText("cloud/player/error"_i18n);
             this->retryWithSoftwareDec();
             break;
         case MpvEventEnum::END_OF_FILE:
+            // The video ran to the end: nothing to resume next time.
+            PlaybackStore::instance().update(this->file.id, 0, 0);
             brls::Application::popActivity();
             return;
         case MpvEventEnum::UPDATE_PROGRESS:
@@ -426,6 +447,22 @@ void PlayerPage::presentQualityMenu() {
         },
         this->streamIndex);
     brls::Application::pushActivity(new brls::Activity(dropdown));
+#endif
+}
+
+/// Stores the current playback position so the next open resumes here.
+bool PlayerPage::savePosition() {
+#ifdef NXKIT_WITH_MPV
+    auto& mpv = nxkit::MPVCore::instance();
+    if (mpv.isStopped() || this->file.id.empty()) return false;
+    logDebug("player: save position " +
+             std::to_string((int64_t)mpv.playback_time) + "/" +
+             std::to_string((int64_t)mpv.duration));
+    PlaybackStore::instance().update(this->file.id, mpv.playback_time,
+                                     (double)mpv.duration);
+    return true;
+#else
+    return false;
 #endif
 }
 

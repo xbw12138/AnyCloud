@@ -40,6 +40,7 @@ private:
     void showQualityMenu();
     void presentQualityMenu();
     void retryWithSoftwareDec();
+    bool savePosition();
 
     std::shared_ptr<bool> alive = std::make_shared<bool>(true);
 
@@ -53,6 +54,8 @@ private:
     std::string lastUrl;
     std::string lastHeaders;
     bool triedSoftwareDec = false;
+    // Seconds to jump to once the stream is loaded (0 = play from start).
+    double resumePosition = 0;
 
     brls::Label* loadingLabel = nullptr;
     brls::Label* titleLabel = nullptr;

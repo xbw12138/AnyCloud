@@ -11,6 +11,7 @@ nxkit_add_app(cloud
         source/drive/drive_provider.cpp
         source/drive/quark_drive.cpp
         source/drive/recent_store.cpp
+        source/drive/playback_store.cpp
         source/pages/login_page.cpp
         source/pages/file_list_page.cpp
         source/pages/profile_page.cpp
