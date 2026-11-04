@@ -172,13 +172,8 @@ void AutoTabFrame::addTab(AutoSidebarItem* tab, TabViewCreator creator) {
         newContent->registerAction(
             "hints/back"_i18n, brls::BUTTON_B,
             [this, newContent](brls::View* view) {
-                if (brls::Application::getInputType() == brls::InputType::TOUCH) {
-                    this->dismiss();
-                    return true;
-                }
-                // Give the page a chance to stay where it is (going up one
-                // folder, closing a sub view) before handing focus back to
-                // the sidebar.
+                // Always treat B as back: checking the last input type here made
+                // the key a no-op after the touch screen had been used.
                 BackRequestHandler* handler =
                     dynamic_cast<BackRequestHandler*>(newContent);
                 if (handler && handler->onBackRequested()) return true;

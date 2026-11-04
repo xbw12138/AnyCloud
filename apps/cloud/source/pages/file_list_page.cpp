@@ -20,6 +20,17 @@ using namespace brls::literals;
 
 namespace cloud {
 
+static void listLog(const std::string& line) {
+#ifdef __SWITCH__
+    FILE* file = fopen("sdmc:/switch/nxkit/qr_debug.log", "a");
+#else
+    FILE* file = fopen("/tmp/qr_debug.log", "a");
+#endif
+    if (!file) return;
+    fprintf(file, "%s\n", line.c_str());
+    fclose(file);
+}
+
 static const int kPageSize = 50;
 static const float kGridRowHeight = 74;
 static const float kListRowHeight = 96;
@@ -585,6 +596,8 @@ void FileListPage::showLoginState() {
 }
 
 void FileListPage::showEmptyState() {
+    listLog("list: empty state total=" + std::to_string(this->total) +
+            " dir=" + this->pathStack.back().second);
     this->grid->setVisibility(brls::Visibility::GONE);
     this->emptyView->setVisibility(brls::Visibility::VISIBLE);
 
@@ -616,6 +629,7 @@ void FileListPage::showEmptyState() {
 }
 
 void FileListPage::showErrorState(const std::string& error) {
+    listLog("list: error state: " + error);
     this->grid->setVisibility(brls::Visibility::GONE);
     this->emptyView->setVisibility(brls::Visibility::VISIBLE);
     this->emptyView->setContent(
@@ -831,6 +845,8 @@ void FileListPage::applyFiles(const std::vector<DriveFile>& files, int total,
 void FileListPage::enterFolder(const std::string& dirId,
                                const std::string& name) {
     brls::Logger::info("cloud: enter folder '{}' ({})", name, dirId);
+    listLog("list: enter '" + name + "' depth=" +
+            std::to_string(this->pathStack.size() + 1));
     this->pathStack.emplace_back(dirId, name);
     this->updateBreadcrumb();
     this->refresh();
@@ -840,6 +856,7 @@ bool FileListPage::onBackRequested() { return this->goUp(); }
 
 bool FileListPage::goUp() {
     if (this->pathStack.size() <= 1) return false;  // let the activity pop
+    listLog("list: go up depth=" + std::to_string(this->pathStack.size()));
     this->pathStack.pop_back();
     this->updateBreadcrumb();
     this->refresh();
