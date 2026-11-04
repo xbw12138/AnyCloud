@@ -32,8 +32,10 @@ static void listLog(const std::string& line) {
 }
 
 static const int kPageSize = 50;
-static const float kGridRowHeight = 74;
-static const float kListRowHeight = 96;
+// Tile height: 96px cover band plus two lines of text.
+static const float kGridRowHeight = 166;
+// Single column row height.
+static const float kListRowHeight  = 100;
 
 static std::string lowerName(const std::string& name) {
     std::string value = name;
@@ -218,29 +220,33 @@ public:
         : page(page), listMode(page->isListMode()) {
         brls::Theme theme = brls::Application::getTheme();
 
-        this->setAxis(brls::Axis::ROW);
-        this->setAlignItems(brls::AlignItems::CENTER);
         this->setFocusable(true);
         this->setBackgroundColor(theme["cloud/surface"]);
         this->setBorderThickness(0);
 
+        // The thumb box holds the type badge: it is a plain icon slot in list
+        // mode and becomes the tinted cover band of the grid card.
+        this->thumb = new brls::Box(brls::Axis::ROW);
+        this->thumb->setJustifyContent(brls::JustifyContent::CENTER);
+        this->thumb->setAlignItems(brls::AlignItems::CENTER);
         this->badge = new FileTypeBadge();
-        this->addView(this->badge);
+        this->thumb->addView(this->badge);
+        this->addView(this->thumb);
 
-        brls::Box* textBox = new brls::Box(brls::Axis::COLUMN);
-        textBox->setGrow(1);
-        textBox->setJustifyContent(brls::JustifyContent::CENTER);
-        this->addView(textBox);
+        this->textBox = new brls::Box(brls::Axis::COLUMN);
+        this->textBox->setGrow(1);
+        this->textBox->setJustifyContent(brls::JustifyContent::CENTER);
+        this->addView(this->textBox);
 
         this->nameLabel = new brls::Label();
         this->nameLabel->setSingleLine(true);
         this->nameLabel->setAnimated(true);
         this->nameLabel->setTextColor(theme["cloud/text"]);
-        textBox->addView(this->nameLabel);
+        this->textBox->addView(this->nameLabel);
 
         this->metaLabel = new brls::Label();
         this->metaLabel->setTextColor(theme["cloud/text_secondary"]);
-        textBox->addView(this->metaLabel);
+        this->textBox->addView(this->metaLabel);
 
         this->chevron = new ChevronView();
         this->addView(this->chevron);
@@ -276,8 +282,9 @@ public:
         if (!date.empty()) meta += "  ·  " + date;
         this->metaLabel->setText(meta);
 
-        this->chevron->setVisibility(file.isDir ? brls::Visibility::VISIBLE
-                                                : brls::Visibility::INVISIBLE);
+        this->chevron->setVisibility(this->listMode && file.isDir
+                                         ? brls::Visibility::VISIBLE
+                                         : brls::Visibility::GONE);
         this->refreshFocusStyle();
     }
 
@@ -297,28 +304,48 @@ public:
 
 private:
     void applyLayout() {
+        brls::Theme theme = brls::Application::getTheme();
         if (this->listMode) {
+            // Single column: icon, title and metadata on one line.
+            this->setAxis(brls::Axis::ROW);
             this->setPadding(0, 26, 0, 22);
             this->setCornerRadius(16);
             this->setHighlightCornerRadius(16);
+
+            this->thumb->setDimensions(58, 58);
+            this->thumb->setMarginRight(20);
+            this->thumb->setBackgroundColor(nvgRGBA(0, 0, 0, 0));
             this->badge->setDimensions(58, 58);
-            this->badge->setMarginRight(20);
+
+            this->textBox->setGrow(1);
+            this->textBox->setPadding(0);
             this->nameLabel->setFontSize(22);
             this->metaLabel->setFontSize(15);
             this->metaLabel->setMarginTop(5);
+
+            this->chevron->setVisibility(brls::Visibility::VISIBLE);
             this->chevron->setDimensions(24, 24);
             this->chevron->setMarginLeft(14);
         } else {
-            this->setPadding(0, 22, 0, 18);
-            this->setCornerRadius(14);
-            this->setHighlightCornerRadius(14);
-            this->badge->setDimensions(46, 46);
-            this->badge->setMarginRight(16);
-            this->nameLabel->setFontSize(19);
-            this->metaLabel->setFontSize(13);
+            // Multi column tile: cover band on top, text below.
+            this->setAxis(brls::Axis::COLUMN);
+            this->setPadding(0);
+            this->setCornerRadius(18);
+            this->setHighlightCornerRadius(18);
+
+            this->thumb->setWidthPercentage(100);
+            this->thumb->setHeight(96);
+            this->thumb->setMarginRight(0);
+            this->thumb->setBackgroundColor(theme["cloud/surface_alt"]);
+            this->badge->setDimensions(40, 40);
+
+            this->textBox->setGrow(0);
+            this->textBox->setPadding(12, 16, 14, 16);
+            this->nameLabel->setFontSize(17);
+            this->metaLabel->setFontSize(12);
             this->metaLabel->setMarginTop(3);
-            this->chevron->setDimensions(20, 20);
-            this->chevron->setMarginLeft(10);
+
+            this->chevron->setVisibility(brls::Visibility::GONE);
         }
         this->invalidate();
     }
@@ -337,6 +364,8 @@ private:
 
     FileListPage* page;
     bool listMode = false;
+    brls::Box* thumb = nullptr;
+    brls::Box* textBox = nullptr;
     FileTypeBadge* badge = nullptr;
     brls::Label* nameLabel = nullptr;
     brls::Label* metaLabel = nullptr;
@@ -497,9 +526,10 @@ void FileListPage::setup() {
     // This page draws its own empty-state illustration; the grid's built-in
     // placeholder would flash while a folder is loading.
     this->grid->setHintEnabled(false);
-    this->grid->spanCount = 1;
-    this->grid->estimatedRowHeight = kGridRowHeight;
-    this->grid->estimatedRowSpace = 8;
+    this->grid->spanCount          = this->listMode ? 1 : 4;
+    this->grid->estimatedRowHeight =
+        this->listMode ? kListRowHeight : kGridRowHeight;
+    this->grid->estimatedRowSpace = this->listMode ? 8 : 12;
     this->grid->setPaddingTop(6);
     this->grid->setPaddingBottom(28);
     this->grid->setPaddingLeft(40);
@@ -744,8 +774,12 @@ void FileListPage::toggleViewMode() {
                                       ? "cloud/files/view_grid"_i18n
                                       : "cloud/files/view_list"_i18n);
     if (this->grid) {
+        // List mode is a single column of wide rows, grid mode is a four
+        // column wall of tiles.
+        this->grid->spanCount          = this->listMode ? 1 : 4;
         this->grid->estimatedRowHeight =
             this->listMode ? kListRowHeight : kGridRowHeight;
+        this->grid->estimatedRowSpace = this->listMode ? 8 : 12;
         this->grid->reloadData();
     }
 }
