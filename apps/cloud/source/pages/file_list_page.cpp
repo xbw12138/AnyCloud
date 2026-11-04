@@ -494,6 +494,9 @@ void FileListPage::setup() {
 
     this->grid = new RecyclingGrid();
     this->grid->setGrow(1);
+    // This page draws its own empty-state illustration; the grid's built-in
+    // placeholder would flash while a folder is loading.
+    this->grid->setHintEnabled(false);
     this->grid->spanCount = 1;
     this->grid->estimatedRowHeight = kGridRowHeight;
     this->grid->estimatedRowSpace = 10;

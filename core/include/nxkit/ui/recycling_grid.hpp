@@ -124,6 +124,9 @@ public:
 
     void setError(std::string error = "");
 
+    /// 关闭列表为空时自动绘制的占位图，由调用方自行绘制空状态
+    void setHintEnabled(bool enabled);
+
     void selectRowAt(size_t index, bool animated);
 
     //    计算从start元素的顶点到index（不包含index）元素顶点的距离
@@ -198,6 +201,7 @@ private:
 
     RecyclingGridContentBox* contentBox = nullptr;
     brls::Image* hintImage;
+    bool hintEnabled = true;
     brls::Label* hintLabel;
     ButtonRefresh* refreshButton;
     brls::Rect renderedFrame;

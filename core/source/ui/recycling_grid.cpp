@@ -164,7 +164,7 @@ void RecyclingGrid::draw(NVGcontext* vg, float x, float y, float width,
     ScrollingFrame::draw(vg, x, y, width, height, style, ctx);
 
     if (!this->dataSource || this->dataSource->getItemCount() == 0) {
-        if (!this->hintImage) return;
+        if (!this->hintEnabled || !this->hintImage) return;
         float w1 = hintImage->getWidth(), w2 = hintLabel->getWidth();
         float h1 = hintImage->getHeight(), h2 = hintLabel->getHeight();
         this->hintImage->setAlpha(this->getAlpha());
@@ -369,6 +369,8 @@ void RecyclingGrid::setEmpty(std::string msg) {
     this->hintLabel->setText(msg);
     this->clearData();
 }
+
+void RecyclingGrid::setHintEnabled(bool enabled) { this->hintEnabled = enabled; }
 
 void RecyclingGrid::setError(std::string error) {
     this->hintImage->setImageFromRes("pictures/empty.png");
