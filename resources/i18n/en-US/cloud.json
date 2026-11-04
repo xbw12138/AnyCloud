@@ -75,6 +75,7 @@
     "forward": "Forward",
     "backward": "Back",
     "quality": "Quality",
+    "no_quality": "No quality options available",
     "hint_video": "A Play/Pause  ←/→ Seek  ↑/↓ 1 min  Y Quality  B Exit",
     "hint_audio": "A Play/Pause  ←/→ Seek  B Exit"
   },

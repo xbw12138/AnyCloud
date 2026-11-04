@@ -27,23 +27,23 @@ void drawCloud(NVGcontext* vg, float cx, float cy, float s, NVGcolor fill) {
     nvgFill(vg);
 }
 
-void drawFolder(NVGcontext* vg, float cx, float cy, float s, NVGcolor fill,
-                NVGcolor stroke) {
-    float left = cx - 50 * s;
-    float top = cy + 8 * s;
-
-    // Tab first, fill only: the body outline then reads as one folder shape.
-    nvgBeginPath(vg);
-    nvgRoundedRect(vg, left, top - 16 * s, 42 * s, 16 * s, 5 * s);
-    nvgFillColor(vg, fill);
-    nvgFill(vg);
+void drawQuarkMark(NVGcontext* vg, float cx, float cy, float s, NVGcolor fill,
+                   NVGcolor stroke) {
+    // Cloud silhouette with the Quark "Q" ring inside, matching the app icon.
+    drawCloud(vg, cx, cy - 6 * s, s * 1.2f, fill);
 
     nvgBeginPath(vg);
-    nvgRoundedRect(vg, left, top, 100 * s, 48 * s, 10 * s);
-    nvgFillColor(vg, fill);
-    nvgFill(vg);
+    nvgCircle(vg, cx + 12 * s, cy + 4 * s, 17 * s);
     nvgStrokeColor(vg, stroke);
-    nvgStrokeWidth(vg, 1.5f * s);
+    nvgStrokeWidth(vg, 4 * s);
+    nvgStroke(vg);
+
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, cx + 24 * s, cy + 16 * s);
+    nvgLineTo(vg, cx + 33 * s, cy + 25 * s);
+    nvgLineCap(vg, NVG_ROUND);
+    nvgStrokeColor(vg, stroke);
+    nvgStrokeWidth(vg, 4 * s);
     nvgStroke(vg);
 }
 
@@ -142,12 +142,7 @@ public:
 
         switch (this->mode) {
             case CloudEmptyView::Mode::Empty:
-                drawFolder(vg, cx, cy + 10 * s, s, tint, strong);
-                drawCloud(vg, cx - 6 * s, cy - 34 * s, s, tint);
-                drawSparkle(vg, cx + 58 * s, cy - 40 * s, 8 * s,
-                            fade(accent, 0.55f));
-                drawSparkle(vg, cx - 62 * s, cy + 2 * s, 5 * s,
-                            fade(accent, 0.35f));
+                drawQuarkMark(vg, cx, cy + 4 * s, s, tint, strong);
                 break;
 
             case CloudEmptyView::Mode::Login:

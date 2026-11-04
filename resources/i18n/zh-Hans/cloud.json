@@ -75,6 +75,7 @@
     "forward": "快进",
     "backward": "快退",
     "quality": "清晰度",
+    "no_quality": "暂无可用清晰度",
     "hint_video": "A 播放/暂停  ←/→ 快退/快进  ↑/↓ 1 分钟  Y 清晰度  B 退出",
     "hint_audio": "A 播放/暂停  ←/→ 快退/快进  B 退出"
   },

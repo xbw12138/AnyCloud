@@ -786,7 +786,10 @@ void FileListPage::applyFiles(const std::vector<DriveFile>& files, int total,
 
     this->applySort();
 
-    if (source->files.empty()) {
+    // Only treat the folder as empty when the server says so: an empty page
+    // for a non-empty folder would otherwise flash the empty state illustration
+    // for one frame while the directory loads.
+    if (source->files.empty() && this->total == 0) {
         this->showEmptyState();
         return;
     }

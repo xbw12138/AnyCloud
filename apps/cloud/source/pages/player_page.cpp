@@ -369,7 +369,44 @@ void PlayerPage::seekBy(int64_t seconds) {
 
 void PlayerPage::showQualityMenu() {
 #ifdef NXKIT_WITH_MPV
-    if (this->streams.empty()) return;
+    logDebug("player: Y pressed, streams=" + std::to_string(this->streams.size()));
+    if (this->streams.empty()) {
+        // The transcode request failed earlier (the CDN sometimes answers 400)
+        // and playback fell back to the raw download link. Ask again on demand
+        // instead of silently ignoring the key.
+        this->provider->videoStreams(
+            this->file.id,
+            [this, alive = this->alive](const std::vector<VideoStream>& streams,
+                                        const std::string& def,
+                                        const std::string& error) {
+                brls::sync([this, alive, streams, def, error] {
+                    if (!*alive) return;
+                    logDebug("player: quality refetch n=" +
+                             std::to_string(streams.size()) + " err=" + error);
+                    if (streams.empty() || !error.empty()) {
+                        brls::Application::notify(
+                            "cloud/player/no_quality"_i18n);
+                        return;
+                    }
+                    this->streams = streams;
+                    this->streamIndex = 0;
+                    for (size_t i = 0; i < streams.size(); i++) {
+                        if (streams[i].resolution == def) {
+                            this->streamIndex = (int)i;
+                            break;
+                        }
+                    }
+                    this->presentQualityMenu();
+                });
+            });
+        return;
+    }
+    this->presentQualityMenu();
+#endif
+}
+
+void PlayerPage::presentQualityMenu() {
+#ifdef NXKIT_WITH_MPV
     std::vector<std::string> names;
     for (const auto& s : this->streams)
         names.push_back(s.resolution + "  " +

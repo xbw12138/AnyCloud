@@ -38,6 +38,7 @@ private:
     void updateOsd();
     void seekBy(int64_t seconds);
     void showQualityMenu();
+    void presentQualityMenu();
     void retryWithSoftwareDec();
 
     std::shared_ptr<bool> alive = std::make_shared<bool>(true);
