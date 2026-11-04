@@ -52,6 +52,26 @@ static void registerFrameworkTheme(const AppConfig& config) {
     // Grey text readable in both themes.
     light.addColor("font/grey", nvgRGB(148, 153, 160));
     dark.addColor("font/grey", nvgRGB(148, 153, 160));
+
+    // Flat, high contrast palette used by the cloud pages: a single dark
+    // canvas with slightly lighter cards and no visible borders.
+    light.addColor("cloud/bg", nvgRGB(247, 248, 250));
+    dark.addColor("cloud/bg", nvgRGB(20, 21, 25));
+
+    light.addColor("cloud/surface", nvgRGB(255, 255, 255));
+    dark.addColor("cloud/surface", nvgRGB(30, 32, 37));
+
+    light.addColor("cloud/surface_alt", nvgRGB(240, 242, 245));
+    dark.addColor("cloud/surface_alt", nvgRGB(40, 43, 49));
+
+    light.addColor("cloud/border", nvgRGBA(0, 0, 0, 20));
+    dark.addColor("cloud/border", nvgRGBA(255, 255, 255, 26));
+
+    light.addColor("cloud/text", nvgRGB(28, 30, 34));
+    dark.addColor("cloud/text", nvgRGB(236, 238, 242));
+
+    light.addColor("cloud/text_secondary", nvgRGB(132, 138, 148));
+    dark.addColor("cloud/text_secondary", nvgRGB(140, 149, 162));
 }
 
 static brls::Activity* createFallbackActivity(const AppConfig& config) {

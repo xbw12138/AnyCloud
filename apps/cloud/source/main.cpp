@@ -26,9 +26,9 @@ int main(int argc, char** argv) {
 
     nxkit::AppConfig config;
     config.title = "夸克网盘";
-    // Quark-ish green accent.
-    config.lightAccent = nvgRGB(0, 160, 110);
-    config.darkAccent = nvgRGB(64, 200, 150);
+    // Quark blue used by the pill tabs and focus rings.
+    config.lightAccent = nvgRGB(30, 110, 240);
+    config.darkAccent = nvgRGB(64, 140, 255);
 
     // Temporary: CLOUD_DEBUG_LOGIN=1 opens the QR login page directly.
     const bool debugLogin = std::getenv("CLOUD_DEBUG_LOGIN") != nullptr;

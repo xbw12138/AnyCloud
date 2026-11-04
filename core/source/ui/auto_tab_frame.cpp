@@ -126,6 +126,9 @@ void AutoTabFrame::setSideBarPosition(AutoTabBarPosition position) {
             this->setDirection(brls::Direction::LEFT_TO_RIGHT);
             this->setHorizontalMode(true);
             this->sidebar->setWidthPercentage(100);
+            this->sidebar->setAxis(brls::Axis::ROW);
+            this->sidebar->setJustifyContent(brls::JustifyContent::FLEX_START);
+            this->sidebar->setAlignItems(brls::AlignItems::CENTER);
             break;
         case AutoTabBarPosition::RIGHT:
             this->setAxis(brls::Axis::ROW);
@@ -138,6 +141,7 @@ void AutoTabFrame::setSideBarPosition(AutoTabBarPosition position) {
             this->setDirection(brls::Direction::LEFT_TO_RIGHT);
             this->setHorizontalMode(false);
             this->sidebar->setWidth(sidebarWidth);
+            this->sidebar->setAxis(brls::Axis::COLUMN);
             break;
         default:;
     }

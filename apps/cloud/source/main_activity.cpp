@@ -16,8 +16,15 @@ namespace cloud {
 static void addTab(AutoTabFrame* tabs, const std::string& label,
                    TabViewCreator creator) {
     AutoSidebarItem* item = new AutoSidebarItem();
-    item->setTabStyle(AutoTabBarStyle::ACCENT);
+    // Plain items take the active background colour, which turns the focused
+    // tab into the rounded pill used by the Quark clients.
+    item->setTabStyle(AutoTabBarStyle::PLAIN);
     item->setLabel(label);
+    item->setHeight(46);
+    item->setCornerRadius(23);
+    item->setHighlightCornerRadius(23);
+    item->setPadding(0, 24, 0, 24);
+    item->setMargins(0, 4, 0, 4);
     tabs->addTab(item, std::move(creator));
 }
 
@@ -26,7 +33,7 @@ static brls::View* createSoonPage() {
     brls::Box* page = new brls::Box(brls::Axis::COLUMN);
     page->setGrow(1);
     // Same padding as the FileListPage header so the sections line up.
-    page->setPadding(14, 20, 12, 20);
+    page->setPadding(20, 40, 12, 40);
 
     CloudEmptyView* empty = new CloudEmptyView();
     empty->setContent(CloudEmptyView::Mode::Empty, "cloud/soon/title"_i18n,
@@ -38,13 +45,25 @@ static brls::View* createSoonPage() {
 }
 
 brls::View* MainActivity::createContentView() {
+    brls::Theme theme = brls::Application::getTheme();
+
     AutoTabFrame* tabs = new AutoTabFrame();
-    tabs->setSideBarPosition(AutoTabBarPosition::LEFT);
-    tabs->setHorizontalMode(false);
+    tabs->setSideBarPosition(AutoTabBarPosition::TOP);
     // Keep landing on the file browser when the app opens.
     tabs->setDefaultTabIndex(1);
-    // The default sidebar width is too narrow for four-character labels.
-    tabs->getSidebar()->setWidth(190);
+    tabs->setFontSize(19);
+    tabs->setBackgroundColor(theme["cloud/bg"]);
+
+    // Flat tab bar: no panel behind the pills, generous side padding so the
+    // tabs line up with the page content below.
+    brls::Box* bar = tabs->getSidebar();
+    bar->setBackgroundColor(theme["cloud/bg"]);
+    bar->setHeight(88);
+    bar->setPadding(26, 40, 8, 40);
+
+    tabs->setItemActiveBackgroundColor(theme["brls/accent"]);
+    tabs->setItemActiveTextColor(nvgRGB(255, 255, 255));
+    tabs->setItemDefaultBackgroundColor(nvgRGBA(0, 0, 0, 0));
 
     addTab(tabs, "cloud/tab/recent"_i18n, [] {
         return new FileListPage(FileListPage::Mode::Recent);
@@ -53,8 +72,6 @@ brls::View* MainActivity::createContentView() {
     addTab(tabs, "cloud/tab/shared"_i18n, [] { return createSoonPage(); });
     addTab(tabs, "cloud/tab/favorites"_i18n, [] { return createSoonPage(); });
     addTab(tabs, "cloud/tab/profile"_i18n, [] { return new ProfilePage(); });
-
-    tabs->setFontSize(22);
 
     return tabs;
 }

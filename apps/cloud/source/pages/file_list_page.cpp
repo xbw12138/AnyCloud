@@ -221,9 +221,8 @@ public:
         this->setAxis(brls::Axis::ROW);
         this->setAlignItems(brls::AlignItems::CENTER);
         this->setFocusable(true);
-        this->setBackgroundColor(theme["color/grey_1"]);
-        this->setBorderColor(theme["brls/header/border"]);
-        this->setBorderThickness(1);
+        this->setBackgroundColor(theme["cloud/surface"]);
+        this->setBorderThickness(0);
 
         this->badge = new FileTypeBadge();
         this->addView(this->badge);
@@ -236,11 +235,11 @@ public:
         this->nameLabel = new brls::Label();
         this->nameLabel->setSingleLine(true);
         this->nameLabel->setAnimated(true);
-        this->nameLabel->setTextColor(theme["brls/text"]);
+        this->nameLabel->setTextColor(theme["cloud/text"]);
         textBox->addView(this->nameLabel);
 
         this->metaLabel = new brls::Label();
-        this->metaLabel->setTextColor(theme["font/grey"]);
+        this->metaLabel->setTextColor(theme["cloud/text_secondary"]);
         textBox->addView(this->metaLabel);
 
         this->chevron = new ChevronView();
@@ -299,22 +298,22 @@ public:
 private:
     void applyLayout() {
         if (this->listMode) {
-            this->setPadding(0, 22, 0, 18);
-            this->setCornerRadius(14);
-            this->setHighlightCornerRadius(14);
-            this->badge->setDimensions(64, 64);
-            this->badge->setMarginRight(18);
+            this->setPadding(0, 26, 0, 22);
+            this->setCornerRadius(16);
+            this->setHighlightCornerRadius(16);
+            this->badge->setDimensions(58, 58);
+            this->badge->setMarginRight(20);
             this->nameLabel->setFontSize(22);
             this->metaLabel->setFontSize(15);
             this->metaLabel->setMarginTop(5);
             this->chevron->setDimensions(24, 24);
             this->chevron->setMarginLeft(14);
         } else {
-            this->setPadding(0, 16, 0, 14);
-            this->setCornerRadius(12);
-            this->setHighlightCornerRadius(12);
-            this->badge->setDimensions(44, 44);
-            this->badge->setMarginRight(14);
+            this->setPadding(0, 22, 0, 18);
+            this->setCornerRadius(14);
+            this->setHighlightCornerRadius(14);
+            this->badge->setDimensions(46, 46);
+            this->badge->setMarginRight(16);
             this->nameLabel->setFontSize(19);
             this->metaLabel->setFontSize(13);
             this->metaLabel->setMarginTop(3);
@@ -327,11 +326,13 @@ private:
     void refreshFocusStyle() {
         brls::Theme theme = brls::Application::getTheme();
         bool selected = this->isFocused();
-        this->setBorderColor(selected ? theme["brls/accent"]
-                                      : theme["brls/header/border"]);
-        this->setBorderThickness(selected ? 2.0f : 1.0f);
-        this->nameLabel->setTextColor(selected ? theme["brls/accent"]
-                                               : theme["brls/text"]);
+        // Flat cards: only the focused one lifts to a lighter surface and
+        // gains a thin accent outline.
+        this->setBackgroundColor(selected ? theme["cloud/surface_alt"]
+                                          : theme["cloud/surface"]);
+        this->setBorderColor(theme["brls/accent"]);
+        this->setBorderThickness(selected ? 2.0f : 0.0f);
+        this->nameLabel->setTextColor(theme["cloud/text"]);
     }
 
     FileListPage* page;
@@ -433,23 +434,22 @@ void FileListPage::setup() {
     this->setAxis(brls::Axis::COLUMN);
 
     brls::Box* header = new brls::Box(brls::Axis::COLUMN);
-    header->setPadding(14, 20, 12, 20);
-    header->setLineColor(theme["brls/header/border"]);
-    header->setLineBottom(1);
+    header->setPadding(14, 40, 14, 40);
 
     brls::Box* titleRow = new brls::Box(brls::Axis::ROW);
     titleRow->setAlignItems(brls::AlignItems::CENTER);
 
     this->breadcrumb = new brls::Label();
     this->breadcrumb->setGrow(1);
-    this->breadcrumb->setFontSize(26);
+    this->breadcrumb->setFontSize(28);
+    this->breadcrumb->setTextColor(theme["cloud/text"]);
     this->breadcrumb->setSingleLine(true);
     this->breadcrumb->setAnimated(true);
     titleRow->addView(this->breadcrumb);
 
     this->hintLabel = new brls::Label();
     this->hintLabel->setFontSize(13);
-    this->hintLabel->setTextColor(theme["font/grey"]);
+    this->hintLabel->setTextColor(theme["cloud/text_secondary"]);
     this->hintLabel->setText(this->mode == Mode::Picker
                                  ? "cloud/files/hint_picker"_i18n
                                  : "cloud/files/hint_browse"_i18n);
@@ -486,8 +486,8 @@ void FileListPage::setup() {
 
     this->subtitleLabel = new brls::Label();
     this->subtitleLabel->setFontSize(14);
-    this->subtitleLabel->setTextColor(theme["font/grey"]);
-    this->subtitleLabel->setMarginTop(4);
+    this->subtitleLabel->setTextColor(theme["cloud/text_secondary"]);
+    this->subtitleLabel->setMarginTop(6);
     header->addView(this->subtitleLabel);
 
     this->addView(header);
@@ -499,13 +499,11 @@ void FileListPage::setup() {
     this->grid->setHintEnabled(false);
     this->grid->spanCount = 1;
     this->grid->estimatedRowHeight = kGridRowHeight;
-    this->grid->estimatedRowSpace = 10;
-    this->grid->setPaddingTop(8);
-    this->grid->setPaddingBottom(20);
-    // estimatedRowSpace doubles as the right gutter in single column mode,
-    // so these paddings keep the cards symmetric.
-    this->grid->setPaddingLeft(16);
-    this->grid->setPaddingRight(6);
+    this->grid->estimatedRowSpace = 8;
+    this->grid->setPaddingTop(6);
+    this->grid->setPaddingBottom(28);
+    this->grid->setPaddingLeft(40);
+    this->grid->setPaddingRight(32);
 
     auto* source = new FileListDataSource(this);
     this->dataSource = source;
