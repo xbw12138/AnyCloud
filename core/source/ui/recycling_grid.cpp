@@ -581,18 +581,29 @@ brls::View* RecyclingGrid::getNextCellFocus(brls::FocusDirection direction,
          direction != brls::FocusDirection::RIGHT)) {
         int row_offset = spanCount;
         if (direction == brls::FocusDirection::UP) row_offset = -spanCount;
-        brls::View* row_currentFocus       = nullptr;
-        size_t row_currentFocusIndex = *((size_t*)parentUserData) + row_offset;
+        brls::View* row_currentFocus = nullptr;
+        size_t count                 = this->dataSource
+                           ? this->dataSource->getItemCount()
+                           : 0;
+        if (count == 0) return nullptr;
+        int row_currentFocusIndex = (int)*((size_t*)parentUserData) + row_offset;
 
-        if (row_currentFocusIndex >= this->dataSource->getItemCount()) {
-            row_currentFocusIndex -= *((size_t*)parentUserData) % spanCount;
+        // Clamp to the list bounds so pressing down on the last item keeps the
+        // focus there instead of letting it escape the grid.
+        if (row_currentFocusIndex >= (int)count) {
+            int column   = (int)(*((size_t*)parentUserData) % spanCount);
+            int lastRow  = (int)((count - 1) / spanCount);
+            int lastItem = lastRow * spanCount + column;
+            row_currentFocusIndex = lastItem < (int)count ? lastItem : (int)count - 1;
+        } else if (row_currentFocusIndex < 0) {
+            row_currentFocusIndex = 0;
         }
 
         while (!row_currentFocus && row_currentFocusIndex >= 0 &&
-               row_currentFocusIndex < this->dataSource->getItemCount()) {
+               row_currentFocusIndex < (int)count) {
             for (auto it : this->contentBox->getChildren()) {
                 if (*((size_t*)it->getParentUserData()) ==
-                    row_currentFocusIndex) {
+                    (size_t)row_currentFocusIndex) {
                     row_currentFocus = it->getDefaultFocus();
                     break;
                 }
