@@ -20,11 +20,11 @@ static void addTab(AutoTabFrame* tabs, const std::string& label,
     // tab into the rounded pill used by the Quark clients.
     item->setTabStyle(AutoTabBarStyle::PLAIN);
     item->setLabel(label);
-    item->setHeight(46);
-    item->setCornerRadius(23);
-    item->setHighlightCornerRadius(23);
-    item->setPadding(0, 24, 0, 24);
-    item->setMargins(0, 4, 0, 4);
+    item->setHeight(44);
+    item->setCornerRadius(22);
+    item->setHighlightCornerRadius(22);
+    item->setPadding(0, 22, 0, 22);
+    item->setMargins(0, 3, 0, 3);
     tabs->addTab(item, std::move(creator));
 }
 
@@ -33,7 +33,7 @@ static brls::View* createSoonPage() {
     brls::Box* page = new brls::Box(brls::Axis::COLUMN);
     page->setGrow(1);
     // Same padding as the FileListPage header so the sections line up.
-    page->setPadding(20, 40, 12, 40);
+    page->setPadding(18, 40, 12, 40);
 
     CloudEmptyView* empty = new CloudEmptyView();
     empty->setContent(CloudEmptyView::Mode::Empty, "cloud/soon/title"_i18n,
@@ -51,15 +51,18 @@ brls::View* MainActivity::createContentView() {
     tabs->setSideBarPosition(AutoTabBarPosition::TOP);
     // Keep landing on the file browser when the app opens.
     tabs->setDefaultTabIndex(1);
-    tabs->setFontSize(19);
+    tabs->setFontSize(18);
     tabs->setBackgroundColor(theme["cloud/bg"]);
 
     // Flat tab bar: no panel behind the pills, generous side padding so the
-    // tabs line up with the page content below.
+    // tabs line up with the page content below. A hairline keeps the bar
+    // separated from the content without adding a heavy header block.
     brls::Box* bar = tabs->getSidebar();
     bar->setBackgroundColor(theme["cloud/bg"]);
-    bar->setHeight(88);
-    bar->setPadding(26, 40, 8, 40);
+    bar->setHeight(80);
+    bar->setPadding(22, 40, 6, 40);
+    bar->setLineColor(theme["cloud/border"]);
+    bar->setLineBottom(1);
 
     tabs->setItemActiveBackgroundColor(theme["brls/accent"]);
     tabs->setItemActiveTextColor(nvgRGB(255, 255, 255));

@@ -33,9 +33,9 @@ static void listLog(const std::string& line) {
 
 static const int kPageSize = 50;
 // Tile height: 96px cover band plus two lines of text.
-static const float kGridRowHeight = 166;
+static const float kGridRowHeight = 168;
 // Single column row height.
-static const float kListRowHeight  = 100;
+static const float kListRowHeight  = 96;
 
 static std::string lowerName(const std::string& name) {
     std::string value = name;
@@ -91,6 +91,12 @@ static NVGcolor typeColor(bool isDir, MediaKind kind) {
         case MediaKind::Image: return nvgRGB(64, 150, 255);
         default: return nvgRGB(140, 150, 162);
     }
+}
+
+/// Washed-out type colour used behind the badge in grid cards.
+static NVGcolor typeTint(bool isDir, MediaKind kind) {
+    NVGcolor color = typeColor(isDir, kind);
+    return nvgRGBAf(color.r, color.g, color.b, 0.16f);
 }
 
 /// Solid rounded square with a white glyph for the file type.
@@ -210,6 +216,44 @@ public:
     }
 };
 
+/// Cover band of the grid card. It paints a soft tint of the file type with
+/// rounded top corners matching the card, and hosts the type badge.
+class CoverPlate : public brls::Box {
+public:
+    CoverPlate() : brls::Box(brls::Axis::ROW) {
+        this->setJustifyContent(brls::JustifyContent::CENTER);
+        this->setAlignItems(brls::AlignItems::CENTER);
+    }
+
+    void setTint(NVGcolor color) {
+        this->tint = color;
+        this->invalidate();
+    }
+
+    /// Hidden in list mode, where this view is only an icon slot.
+    void setPlateVisible(bool value) {
+        this->plateVisible = value;
+        this->invalidate();
+    }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        if (this->plateVisible && width > 0 && height > 0) {
+            float radius = this->getCornerRadius();
+            nvgBeginPath(vg);
+            nvgRoundedRectVarying(vg, x, y, width, height, radius, radius, 0,
+                                  0);
+            nvgFillColor(vg, this->a(this->tint));
+            nvgFill(vg);
+        }
+        brls::Box::draw(vg, x, y, width, height, style, ctx);
+    }
+
+private:
+    NVGcolor tint = nvgRGBA(0, 0, 0, 0);
+    bool plateVisible = false;
+};
+
 // -----------------------------------------------------------------------------
 // FileRowCell
 // -----------------------------------------------------------------------------
@@ -224,11 +268,9 @@ public:
         this->setBackgroundColor(theme["cloud/surface"]);
         this->setBorderThickness(0);
 
-        // The thumb box holds the type badge: it is a plain icon slot in list
-        // mode and becomes the tinted cover band of the grid card.
-        this->thumb = new brls::Box(brls::Axis::ROW);
-        this->thumb->setJustifyContent(brls::JustifyContent::CENTER);
-        this->thumb->setAlignItems(brls::AlignItems::CENTER);
+        // The thumb holds the type badge: a plain icon slot in list mode and
+        // the tinted cover band of the grid card.
+        this->thumb = new CoverPlate();
         this->badge = new FileTypeBadge();
         this->thumb->addView(this->badge);
         this->addView(this->thumb);
@@ -273,6 +315,7 @@ public:
 
     void setFile(const DriveFile& file) {
         this->badge->setKind(file.isDir, file.mediaKind());
+        this->thumb->setTint(typeTint(file.isDir, file.mediaKind()));
         this->nameLabel->setText(file.name);
 
         std::string meta = typeTagOf(file);
@@ -304,44 +347,47 @@ public:
 
 private:
     void applyLayout() {
-        brls::Theme theme = brls::Application::getTheme();
         if (this->listMode) {
             // Single column: icon, title and metadata on one line.
             this->setAxis(brls::Axis::ROW);
-            this->setPadding(0, 26, 0, 22);
+            this->setAlignItems(brls::AlignItems::CENTER);
+            this->setPadding(0, 24, 0, 20);
             this->setCornerRadius(16);
             this->setHighlightCornerRadius(16);
 
-            this->thumb->setDimensions(58, 58);
-            this->thumb->setMarginRight(20);
-            this->thumb->setBackgroundColor(nvgRGBA(0, 0, 0, 0));
-            this->badge->setDimensions(58, 58);
+            this->thumb->setPlateVisible(false);
+            this->thumb->setCornerRadius(0);
+            this->thumb->setDimensions(56, 56);
+            this->thumb->setMarginRight(18);
+            this->badge->setDimensions(56, 56);
 
             this->textBox->setGrow(1);
             this->textBox->setPadding(0);
-            this->nameLabel->setFontSize(22);
-            this->metaLabel->setFontSize(15);
-            this->metaLabel->setMarginTop(5);
+            this->nameLabel->setFontSize(21);
+            this->metaLabel->setFontSize(14);
+            this->metaLabel->setMarginTop(4);
 
             this->chevron->setVisibility(brls::Visibility::VISIBLE);
-            this->chevron->setDimensions(24, 24);
-            this->chevron->setMarginLeft(14);
+            this->chevron->setDimensions(22, 22);
+            this->chevron->setMarginLeft(12);
         } else {
-            // Multi column tile: cover band on top, text below.
+            // Multi column tile: tinted cover band on top, text below.
             this->setAxis(brls::Axis::COLUMN);
+            this->setAlignItems(brls::AlignItems::FLEX_START);
             this->setPadding(0);
             this->setCornerRadius(18);
             this->setHighlightCornerRadius(18);
 
+            this->thumb->setPlateVisible(true);
+            this->thumb->setCornerRadius(18);
             this->thumb->setWidthPercentage(100);
             this->thumb->setHeight(96);
             this->thumb->setMarginRight(0);
-            this->thumb->setBackgroundColor(theme["cloud/surface_alt"]);
-            this->badge->setDimensions(40, 40);
+            this->badge->setDimensions(44, 44);
 
             this->textBox->setGrow(0);
             this->textBox->setPadding(12, 16, 14, 16);
-            this->nameLabel->setFontSize(17);
+            this->nameLabel->setFontSize(18);
             this->metaLabel->setFontSize(12);
             this->metaLabel->setMarginTop(3);
 
@@ -364,7 +410,7 @@ private:
 
     FileListPage* page;
     bool listMode = false;
-    brls::Box* thumb = nullptr;
+    CoverPlate* thumb = nullptr;
     brls::Box* textBox = nullptr;
     FileTypeBadge* badge = nullptr;
     brls::Label* nameLabel = nullptr;
@@ -463,25 +509,26 @@ void FileListPage::setup() {
     this->setAxis(brls::Axis::COLUMN);
 
     brls::Box* header = new brls::Box(brls::Axis::COLUMN);
-    header->setPadding(14, 40, 14, 40);
+    header->setPadding(16, 40, 12, 40);
 
     brls::Box* titleRow = new brls::Box(brls::Axis::ROW);
     titleRow->setAlignItems(brls::AlignItems::CENTER);
 
     this->breadcrumb = new brls::Label();
     this->breadcrumb->setGrow(1);
-    this->breadcrumb->setFontSize(28);
+    this->breadcrumb->setFontSize(30);
     this->breadcrumb->setTextColor(theme["cloud/text"]);
     this->breadcrumb->setSingleLine(true);
     this->breadcrumb->setAnimated(true);
     titleRow->addView(this->breadcrumb);
 
     this->hintLabel = new brls::Label();
-    this->hintLabel->setFontSize(13);
+    this->hintLabel->setFontSize(12);
     this->hintLabel->setTextColor(theme["cloud/text_secondary"]);
     this->hintLabel->setText(this->mode == Mode::Picker
                                  ? "cloud/files/hint_picker"_i18n
                                  : "cloud/files/hint_browse"_i18n);
+    this->hintLabel->setMarginRight(18);
     titleRow->addView(this->hintLabel);
 
     this->viewToggle = new brls::Button();
@@ -513,11 +560,38 @@ void FileListPage::setup() {
 
     header->addView(titleRow);
 
+    // Second line: the parent path on the left, the item count on the right.
+    // The path keeps a flexible width so the count stays right-aligned even
+    // when the breadcrumb is hidden at the root.
+    brls::Box* metaRow = new brls::Box(brls::Axis::ROW);
+    metaRow->setAlignItems(brls::AlignItems::CENTER);
+    metaRow->setMarginTop(6);
+
+    // Both labels get a fixed line height: an empty label measures as an
+    // undefined height, which made the header swallow the whole page.
+    this->pathLabel = new brls::Label();
+    this->pathLabel->setFontSize(13);
+    this->pathLabel->setTextColor(theme["cloud/text_secondary"]);
+    this->pathLabel->setSingleLine(true);
+    this->pathLabel->setAnimated(true);
+    this->pathLabel->setHeight(18);
+    metaRow->addView(this->pathLabel);
+
+    // Pushes the item count to the right edge, whether or not there is a
+    // parent path to show.
+    brls::Box* metaSpacer = new brls::Box();
+    metaSpacer->setGrow(1);
+    metaSpacer->setHeight(18);
+    metaRow->addView(metaSpacer);
+
     this->subtitleLabel = new brls::Label();
-    this->subtitleLabel->setFontSize(14);
+    this->subtitleLabel->setFontSize(13);
     this->subtitleLabel->setTextColor(theme["cloud/text_secondary"]);
-    this->subtitleLabel->setMarginTop(6);
-    header->addView(this->subtitleLabel);
+    this->subtitleLabel->setMarginLeft(16);
+    this->subtitleLabel->setHeight(18);
+    metaRow->addView(this->subtitleLabel);
+
+    header->addView(metaRow);
 
     this->addView(header);
 
@@ -529,11 +603,11 @@ void FileListPage::setup() {
     this->grid->spanCount          = this->listMode ? 1 : 4;
     this->grid->estimatedRowHeight =
         this->listMode ? kListRowHeight : kGridRowHeight;
-    this->grid->estimatedRowSpace = this->listMode ? 8 : 12;
-    this->grid->setPaddingTop(6);
-    this->grid->setPaddingBottom(28);
+    this->grid->estimatedRowSpace = this->listMode ? 8 : 14;
+    this->grid->setPaddingTop(4);
+    this->grid->setPaddingBottom(32);
     this->grid->setPaddingLeft(40);
-    this->grid->setPaddingRight(32);
+    this->grid->setPaddingRight(40);
 
     auto* source = new FileListDataSource(this);
     this->dataSource = source;
@@ -574,16 +648,34 @@ void FileListPage::setup() {
 void FileListPage::updateBreadcrumb() {
     if (this->mode == Mode::Recent) {
         this->breadcrumb->setText("cloud/tab/recent"_i18n);
+        this->pathLabel->setText("");
+        this->pathLabel->setVisibility(brls::Visibility::GONE);
         return;
     }
 
-    std::string path = this->mode == Mode::Picker
-                           ? "cloud/files/picker_title"_i18n
-                           : "cloud/files/root"_i18n;
-    for (size_t i = 1; i < this->pathStack.size(); i++)
-        path += " / " + this->pathStack[i].second;
-    this->breadcrumb->setText(path);
-    brls::Logger::info("cloud: breadcrumb '{}'", path);
+    bool picker = this->mode == Mode::Picker;
+    size_t depth = this->pathStack.size();
+
+    // Big title is the folder being browsed, not the whole trail.
+    std::string title = depth > 1 ? this->pathStack.back().second
+                                  : (picker ? "cloud/files/picker_title"_i18n
+                                            : "cloud/files/root"_i18n);
+    this->breadcrumb->setText(title);
+
+    // Small line under it holds the parent trail (without the current
+    // folder, which is already the title). At the root there is nothing to
+    // show, so it stays empty and only the item count remains.
+    std::string path;
+    if (depth > 1) {
+        path = picker ? "cloud/files/picker_title"_i18n
+                      : "cloud/files/root"_i18n;
+        for (size_t i = 1; i + 1 < depth; i++)
+            path += " / " + this->pathStack[i].second;
+    }
+    this->pathLabel->setText(path);
+    this->pathLabel->setVisibility(path.empty() ? brls::Visibility::GONE
+                                                : brls::Visibility::VISIBLE);
+    brls::Logger::info("cloud: breadcrumb '{}'", title);
 }
 
 void FileListPage::updateSubtitle() {
@@ -779,7 +871,7 @@ void FileListPage::toggleViewMode() {
         this->grid->spanCount          = this->listMode ? 1 : 4;
         this->grid->estimatedRowHeight =
             this->listMode ? kListRowHeight : kGridRowHeight;
-        this->grid->estimatedRowSpace = this->listMode ? 8 : 12;
+        this->grid->estimatedRowSpace = this->listMode ? 8 : 14;
         this->grid->reloadData();
     }
 }
