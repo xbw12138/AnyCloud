@@ -243,7 +243,8 @@ void PlayerPage::play() {
                         break;
                     }
                 }
-                this->startUrl(streams[this->streamIndex].url);
+                this->startUrl(streams[this->streamIndex].url,
+                               this->provider->playbackHeaders());
             });
         });
 #endif
@@ -383,7 +384,8 @@ void PlayerPage::showQualityMenu() {
                 selected == this->streamIndex)
                 return;
             this->streamIndex = selected;
-            this->startUrl(this->streams[selected].url);
+            this->startUrl(this->streams[selected].url,
+                           this->provider->playbackHeaders());
         },
         this->streamIndex);
     brls::Application::pushActivity(new brls::Activity(dropdown));

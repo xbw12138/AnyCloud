@@ -29,7 +29,7 @@ struct DriveFile {
 
 struct VideoStream {
     std::string resolution;  // "low", "normal", "high", "super", "2k", "4k"
-    std::string url;         // playable (usually m3u8), no cookie needed
+    std::string url;         // playable m3u8, playbackHeaders() must be sent
     int width = 0;
     int height = 0;
     int64_t bitrate = 0;
@@ -102,6 +102,12 @@ public:
         std::function<void(const std::vector<VideoStream>& streams,
                            const std::string& defaultResolution,
                            const std::string& error)> callback) = 0;
+
+    /// Extra http headers the player must attach to every request it makes
+    /// for this provider (cookie / referer / user agent). Quark's video CDN
+    /// answers 412 Precondition Failed without the cookie, transcoded m3u8
+    /// included.
+    virtual std::string playbackHeaders() const { return std::string(); }
 
     // --- File operations -----------------------------------------------------
     using SimpleCallback = std::function<void(const std::string& error)>;

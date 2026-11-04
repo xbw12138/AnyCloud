@@ -59,8 +59,8 @@ public:
               const std::string& targetDirId, SimpleCallback callback) override;
 
     /// Extra http headers a player must attach when streaming the original
-    /// file (cookie + referer + user agent).
-    std::string playbackHeaders() const;
+    /// file or a transcoded m3u8 (cookie + referer + user agent).
+    std::string playbackHeaders() const override;
 
     /// Receives the full response json, or an error message.
     using JsonCallback =
