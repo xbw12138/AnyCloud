@@ -97,6 +97,7 @@ private:
     RecyclingGridDataSource* dataSource = nullptr;
     CloudEmptyView* emptyView = nullptr;
     brls::Label* breadcrumb = nullptr;
+    brls::Label* pathLabel = nullptr;
     brls::Label* subtitleLabel = nullptr;
     brls::Label* hintLabel = nullptr;
     brls::Button* viewToggle = nullptr;
