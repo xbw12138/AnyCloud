@@ -138,6 +138,15 @@ private:
     AutoSidebarItem* tab = nullptr;
 };
 
+/// Implemented by tab pages that want to consume the B button before the
+/// frame moves focus back to the sidebar (folder navigation, closing an
+/// overlay, ...). Return true when the press was handled.
+class BackRequestHandler {
+public:
+    virtual ~BackRequestHandler() = default;
+    virtual bool onBackRequested() = 0;
+};
+
 class AutoTabFrame : public brls::Box {
 public:
     AutoTabFrame();

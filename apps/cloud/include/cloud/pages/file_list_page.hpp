@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "cloud/drive/drive_provider.hpp"
+#include "nxkit/ui/auto_tab_frame.hpp"
 
 class RecyclingGrid;
 class RecyclingGridDataSource;
@@ -24,7 +25,7 @@ class CloudEmptyView;
 /// Browses a provider's directories. In picker mode only folders are shown
 /// and Y picks the current directory (used by "move to..."). Recent mode
 /// lists media opened from the browser, persisted by RecentStore.
-class FileListPage : public brls::Box {
+class FileListPage : public brls::Box, public BackRequestHandler {
 public:
     enum class Mode { Browse, Picker, Recent };
 
@@ -47,6 +48,10 @@ public:
 
     /// True when the grid is showing tall single-column rows.
     bool isListMode() const { return this->listMode; }
+
+    /// Consumes B while inside a sub folder; at the root it falls through to
+    /// the tab frame, which moves focus back to the sidebar.
+    bool onBackRequested() override;
 
 private:
     enum class SortMode { Time, Name };

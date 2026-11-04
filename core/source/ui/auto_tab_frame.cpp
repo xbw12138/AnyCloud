@@ -171,11 +171,18 @@ void AutoTabFrame::addTab(AutoSidebarItem* tab, TabViewCreator creator) {
 
         newContent->registerAction(
             "hints/back"_i18n, brls::BUTTON_B,
-            [this](brls::View* view) {
-                if (brls::Application::getInputType() == brls::InputType::TOUCH)
+            [this, newContent](brls::View* view) {
+                if (brls::Application::getInputType() == brls::InputType::TOUCH) {
                     this->dismiss();
-                else
-                    brls::Application::giveFocus(this->sidebar);
+                    return true;
+                }
+                // Give the page a chance to stay where it is (going up one
+                // folder, closing a sub view) before handing focus back to
+                // the sidebar.
+                BackRequestHandler* handler =
+                    dynamic_cast<BackRequestHandler*>(newContent);
+                if (handler && handler->onBackRequested()) return true;
+                brls::Application::giveFocus(this->sidebar);
                 return true;
             },
             false, false, brls::SOUND_BACK);

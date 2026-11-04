@@ -505,10 +505,8 @@ void FileListPage::setup() {
     this->emptyView->setVisibility(brls::Visibility::GONE);
     this->addView(this->emptyView);
 
-    // B: leave the current folder first, then the page.
-    this->registerAction(
-        "", brls::BUTTON_B,
-        [this](brls::View*) -> bool { return this->goUp(); }, true);
+    // B is handled by the tab frame (see onBackRequested), which asks the page
+    // first so folder navigation still works.
 
     if (this->mode == Mode::Picker) {
         // Y picks the current directory.
@@ -834,6 +832,8 @@ void FileListPage::enterFolder(const std::string& dirId,
     this->updateBreadcrumb();
     this->refresh();
 }
+
+bool FileListPage::onBackRequested() { return this->goUp(); }
 
 bool FileListPage::goUp() {
     if (this->pathStack.size() <= 1) return false;  // let the activity pop
