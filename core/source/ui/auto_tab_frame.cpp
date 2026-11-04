@@ -165,22 +165,8 @@ void AutoTabFrame::addTab(AutoSidebarItem* tab, TabViewCreator creator) {
 
         if (newContent == this->getActiveTab()) return;
 
+        // setTabAttachedView also registers the back action.
         this->setTabAttachedView(newContent);
-
-        if (!newContent) return;
-
-        newContent->registerAction(
-            "hints/back"_i18n, brls::BUTTON_B,
-            [this, newContent](brls::View* view) {
-                // Always treat B as back: checking the last input type here made
-                // the key a no-op after the touch screen had been used.
-                BackRequestHandler* handler =
-                    dynamic_cast<BackRequestHandler*>(newContent);
-                if (handler && handler->onBackRequested()) return true;
-                brls::Application::giveFocus(this->sidebar);
-                return true;
-            },
-            false, false, brls::SOUND_BACK);
     });
     auto isDefaultTab =
         this->sidebar->getChildren().size() - 1 == this->getDefaultTabIndex();
@@ -359,6 +345,21 @@ void AutoTabFrame::setTabAttachedView(brls::View* newContent) {
     if (!newContent) {
         return;
     }
+    // Register back here instead of in the sidebar focus callback: the default
+    // tab is attached without that callback ever running, which left B dead
+    // until the user switched tabs once.
+    newContent->registerAction(
+        "hints/back"_i18n, brls::BUTTON_B,
+        [this](brls::View* view) {
+            // Always treat B as back: checking the last input type here made
+            // the key a no-op after the touch screen had been used.
+            BackRequestHandler* handler =
+                dynamic_cast<BackRequestHandler*>(this->activeTab);
+            if (handler && handler->onBackRequested()) return true;
+            brls::Application::giveFocus(this->sidebar);
+            return true;
+        },
+        false, false, brls::SOUND_BACK);
     newContent->setGrow(1.0f);
     this->addView(newContent);  // addView calls willAppear
     this->activeTab = newContent;
