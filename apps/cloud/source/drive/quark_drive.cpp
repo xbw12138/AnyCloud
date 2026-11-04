@@ -32,9 +32,12 @@ void netDebugLog(const std::string& line) {
 const char* kDriveBase = "https://drive.quark.cn/1/clouddrive";
 const char* kUopBase = "https://uop.quark.cn/cas/ajax";
 const char* kReferer = "https://pan.quark.cn";
+// No commas: mpv treats http-header-fields as a comma separated list, so a
+// comma inside the value splits the header and ffmpeg sends a malformed
+// request line (the CDN answers 400 Bad Request).
 const char* kUserAgent =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, "
-    "like Gecko) quark-cloud-drive/3.14.2 Chrome/112.0.5615.165 "
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "quark-cloud-drive/3.14.2 Chrome/112.0.5615.165 "
     "Electron/24.1.3.4 Safari/537.36 Channel/pckk_other_ch";
 
 const nxkit::Query kCommonQuery = {{"pr", "ucpro"}, {"fr", "pc"}};
@@ -131,8 +134,9 @@ void QuarkDrive::mergeResponseCookies(const nxkit::HttpResult& result) {
 
 std::string QuarkDrive::playbackHeaders() const {
     std::lock_guard<std::mutex> lock(cookieMutex);
-    return "Cookie: " + http.cookie() + "\r\nReferer: " + kReferer +
-           "\r\nUser-Agent: " + kUserAgent;
+    // mpv's http-header-fields is a comma separated string list.
+    return "Cookie: " + http.cookie() + ",Referer: " + kReferer +
+           ",User-Agent: " + kUserAgent;
 }
 
 // -----------------------------------------------------------------------------
