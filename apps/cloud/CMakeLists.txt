@@ -1,4 +1,18 @@
 # cloud: cloud drive client built on top of nxkit_core.
+set(CLOUD_LIBS "")
+set(CLOUD_INCLUDES "")
+
+if(PLATFORM_SWITCH AND BUILTIN_NSP)
+    # nspmini: install the embedded NSP forwarder to the SD card at runtime.
+    # Vendored under external/nspmini (lib + headers); install hacbrewpack to
+    # build the forwarder itself (scripts/switch-forwarder).
+    set(NSPMINI_DIR ${CMAKE_SOURCE_DIR}/external/nspmini)
+    list(APPEND CLOUD_LIBS ${NSPMINI_DIR}/lib/libnsp.a)
+    list(APPEND CLOUD_INCLUDES ${NSPMINI_DIR}/include)
+    add_subdirectory(${CMAKE_SOURCE_DIR}/scripts/switch-forwarder
+                     ${CMAKE_BINARY_DIR}/forwarder)
+endif()
+
 nxkit_add_app(cloud
         TITLEID "0x010FF000FFFF0102"
         AUTHOR "xbw12138"
@@ -18,4 +32,15 @@ nxkit_add_app(cloud
         source/pages/player_page.cpp
         source/pages/image_viewer.cpp
         source/ui/cloud_empty_view.cpp
+        LIBS
+        ${CLOUD_LIBS}
         )
+
+if(PLATFORM_SWITCH AND BUILTIN_NSP)
+    target_include_directories(cloud PRIVATE ${CLOUD_INCLUDES})
+    target_compile_definitions(cloud PRIVATE BUILTIN_NSP)
+    # Build (and embed) the forwarder NSP before packaging the NRO romfs.
+    add_dependencies(cloud.nro nsp_forwarder.nsp)
+endif()
+
+

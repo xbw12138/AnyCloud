@@ -33,6 +33,7 @@ private:
     void openLogin();
     void logout();
     void openProviderMenu();
+    void installDesktopIcon();
 
     std::shared_ptr<bool> alive = std::make_shared<bool>(true);
 
@@ -47,8 +48,10 @@ private:
     ActionTile* refreshTile = nullptr;
     ActionTile* accountTile = nullptr;
     ActionTile* providerTile = nullptr;
+    ActionTile* desktopTile = nullptr;
 
     bool loggedIn = false;
+    bool refreshing = false;
     AccountInfo account;
 };
 

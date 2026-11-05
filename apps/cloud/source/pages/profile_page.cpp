@@ -9,6 +9,16 @@
 #include "cloud/drive/drive_manager.hpp"
 #include "cloud/pages/login_page.hpp"
 
+#ifndef NXKIT_APP_VERSION
+#define NXKIT_APP_VERSION "unknown"
+#endif
+
+#ifdef BUILTIN_NSP
+#include <switch.h>
+#include "nspmini.hpp"
+#include <borealis/views/dialog.hpp>
+#endif
+
 using namespace brls::literals;
 
 namespace cloud {
@@ -298,6 +308,14 @@ void ProfilePage::build() {
 
     this->addView(actions);
 
+#ifdef BUILTIN_NSP
+    // Install the NSP forwarder so the user can add a home-menu icon.
+    this->desktopTile = new ActionTile("cloud/profile/desktop"_i18n,
+                                       [this] { this->installDesktopIcon(); });
+    this->desktopTile->setMarginTop(16);
+    this->addView(this->desktopTile);
+#endif
+
     // --- Footer -------------------------------------------------------------
     brls::Box* footerSpacer = new brls::Box();
     footerSpacer->setGrow(1);
@@ -308,7 +326,7 @@ void ProfilePage::build() {
     footer->setFontSize(13);
     footer->setTextColor(theme["cloud/text_secondary"]);
     footer->setHeight(18);
-    footer->setText("cloud/profile/version"_i18n + " 1.0.0");
+    footer->setText("cloud/profile/version"_i18n + " " NXKIT_APP_VERSION);
     this->addView(footer);
 }
 
@@ -326,12 +344,22 @@ void ProfilePage::refreshAccount() {
 
     if (!this->loggedIn) return;
 
+    // Ignore taps while a request is already in flight.
+    if (this->refreshing) return;
+    this->refreshing = true;
+    this->refreshTile->setTitle("cloud/profile/refreshing"_i18n);
+
     provider->accountInfo(
         [this, alive = this->alive](const AccountInfo& info,
                                     const std::string& error) {
             brls::sync([this, alive, info, error] {
                 if (!*alive) return;
-                if (error.empty()) this->account = info;
+                this->refreshing = false;
+                this->refreshTile->setTitle("cloud/profile/refresh"_i18n);
+                if (error.empty())
+                    this->account = info;
+                else
+                    brls::Application::notify(error);
                 this->applyAccount();
             });
         });
@@ -398,11 +426,20 @@ void ProfilePage::logout() {
     auto provider = DriveManager::instance().current();
     if (!provider) return;
 
-    provider->logout();
-    this->loggedIn = false;
-    this->account = AccountInfo();
-    this->applyAccount();
-    brls::Application::notify("cloud/profile/logged_out"_i18n);
+    brls::Dialog* dialog = new brls::Dialog("cloud/profile/logout_confirm"_i18n);
+    dialog->addButton("cloud/files/action/cancel"_i18n, []() {});
+    dialog->addButton("cloud/profile/logout"_i18n, [this]() {
+        auto current = DriveManager::instance().current();
+        if (!current) return;
+        current->logout();
+        this->loggedIn = false;
+        this->refreshing = false;
+        this->account = AccountInfo();
+        this->applyAccount();
+        brls::Application::notify("cloud/profile/logged_out"_i18n);
+    });
+    dialog->setCancelable(true);
+    dialog->open();
 }
 
 void ProfilePage::openProviderMenu() {
@@ -429,6 +466,21 @@ void ProfilePage::openProviderMenu() {
         },
         selected);
     brls::Application::pushActivity(new brls::Activity(dropdown));
+}
+
+void ProfilePage::installDesktopIcon() {
+#ifdef BUILTIN_NSP
+    brls::Dialog* dialog =
+        new brls::Dialog("cloud/profile/desktop_warn"_i18n);
+    dialog->addButton("cloud/files/action/cancel"_i18n, []() {});
+    dialog->addButton("cloud/profile/ok"_i18n, []() {
+        brls::Application::blockInputs();
+        mini::InstallSD("romfs:/nsp_forwarder.nsp");
+        u64 titleId = mini::GetTitleID();
+        appletRequestLaunchApplication(titleId, NULL);
+    });
+    dialog->open();
+#endif
 }
 
 }  // namespace cloud

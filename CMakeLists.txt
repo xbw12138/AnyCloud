@@ -47,6 +47,9 @@ elseif(PLATFORM_SWITCH)
     set(__SWITCH__ ON)
     set(CMAKE_C_FLAGS "-I${DEVKITPRO}/libnx/include -I${DEVKITPRO}/portlibs/switch/include")
     set(CMAKE_CXX_FLAGS "-I${DEVKITPRO}/libnx/include -I${DEVKITPRO}/portlibs/switch/include")
+    # Embed an NSP forwarder so the app can install a home-menu (desktop) icon.
+    # Requires the nspmini library and hacbrewpack; see scripts/switch-forwarder.
+    option(BUILTIN_NSP "Built in NSP forwarder (install home-menu icon)" OFF)
 elseif(PLATFORM_PSV)
     message("building for PSVita")
     set(USE_GLFW ON)

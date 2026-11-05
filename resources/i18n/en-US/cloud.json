@@ -102,9 +102,13 @@
     "unknown": "Unknown user",
     "login": "Sign in with QR code",
     "logout": "Sign out",
+    "logout_confirm": "Sign out? You will need to scan the QR code again to sign in.",
     "logged_out": "Signed out",
     "version": "Version",
     "refresh": "Refresh account",
+    "desktop": "Add to home menu",
+    "desktop_warn": "Installing a home-menu icon may risk a ban. Please confirm again.",
+    "ok": "OK",
     "refreshing": "Refreshing…"
   }
 }

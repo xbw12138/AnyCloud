@@ -51,6 +51,7 @@ function(nxkit_add_app APP_NAME)
             ${NXKIT_CORE_DIR}/include
             )
     target_compile_options(${APP_NAME} PRIVATE -ffunction-sections -fdata-sections)
+    target_compile_definitions(${APP_NAME} PRIVATE NXKIT_APP_VERSION="${APP_VERSION}")
     target_link_libraries(${APP_NAME} PRIVATE ${APP_LINK_LIBS})
 
     # -------------------------------------------------------------------------
