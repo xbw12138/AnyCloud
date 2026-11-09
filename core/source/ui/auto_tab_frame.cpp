@@ -46,8 +46,29 @@ const std::string autoTabFrameContentXML = R"xml(
 
 brls::View* AutoTabFrame::create() { return new AutoTabFrame(); }
 
+namespace {
+// 根页面按 B 时弹确认框，避免误触直接退出。
+void confirmQuit() {
+    auto* dialog = new brls::Dialog("确定要退出 夸克网盘 吗？"_i18n);
+    dialog->addButton("取消"_i18n, [] {});
+    dialog->addButton("退出"_i18n, [] { brls::Application::quit(); });
+    dialog->setCancelable(true);
+    dialog->open();
+}
+}  // namespace
+
 AutoTabFrame::AutoTabFrame() {
     this->inflateFromXMLString(autoTabFrameContentXML);
+
+    // 侧边栏获得焦点时按 B：退出应用。内容区的 B 由 attachTab 单独注册，
+    // 聚焦在内容区时会先命中那里的处理器，不会走到这里。
+    this->registerAction(
+        "hints/back"_i18n, brls::BUTTON_B,
+        [](brls::View*) {
+            confirmQuit();
+            return true;
+        },
+        false, false, brls::SOUND_BACK);
 
     BRLS_REGISTER_ENUM_XML_ATTRIBUTE("sidebarPosition", AutoTabBarPosition,
                                      this->setSideBarPosition,
@@ -360,6 +381,11 @@ void AutoTabFrame::setTabAttachedView(brls::View* newContent) {
             BackRequestHandler* handler =
                 dynamic_cast<BackRequestHandler*>(this->activeTab);
             if (handler && handler->onBackRequested()) return true;
+            // 根页面按 B：弹窗确认后退出（配合 exitToHomeMode 直接回系统桌面）。
+            if (brls::Application::getActivitiesStack().size() <= 1) {
+                confirmQuit();
+                return true;
+            }
             brls::Application::giveFocus(this->sidebar);
             return true;
         },

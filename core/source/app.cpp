@@ -107,6 +107,12 @@ int runApp(const AppConfig& config) {
     brls::Application::createWindow(config.title);
     brls::Application::setGlobalQuit(config.globalQuit);
 
+#ifdef __SWITCH__
+    // 退出时直接回系统桌面，而不是回 hbmenu（与 wiliwili 一致）。
+    // hbmenu 在 applet 模式下复用自身 GL 环境，再次启动应用时容易分配失败崩溃。
+    brls::Application::getPlatform()->exitToHomeMode(true);
+#endif
+
     registerFrameworkTheme(config);
     registerFrameworkViews();
     if (config.registerViews) config.registerViews();
