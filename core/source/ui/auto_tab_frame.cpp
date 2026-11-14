@@ -411,6 +411,19 @@ brls::View* AutoTabFrame::getNextFocus(brls::FocusDirection direction,
         return nullptr;
     }
 
+    // With the tab bar on top, moving up out of the content always lands on
+    // the bar. Doing it directly is safer than relying on the sibling index,
+    // which is off by one when the frame holds extra hidden children.
+    if (direction == brls::FocusDirection::UP &&
+        tabBarPosition == AutoTabBarPosition::TOP &&
+        currentView != this->sidebar) {
+        if (this->sidebar->getChildren().empty()) return nullptr;
+        int active = this->group.getActiveIndex();
+        brls::View* item =
+            this->getItem(active >= 0 ? active : 0);
+        return item ? item : this->sidebar->getDefaultFocus();
+    }
+
     void* parentUserData = currentView->getParentUserData();
 
     // Return nullptr immediately if focus direction mismatches the box axis (clang-format refuses to split it in multiple lines...)
@@ -436,7 +449,11 @@ brls::View* AutoTabFrame::getNextFocus(brls::FocusDirection direction,
          direction == brls::FocusDirection::RIGHT &&
          tabBarPosition == AutoTabBarPosition::RIGHT) ||
         (this->getAxis() == brls::Axis::COLUMN &&
-         direction == brls::FocusDirection::UP)) {
+         direction == brls::FocusDirection::UP &&
+         (tabBarPosition == AutoTabBarPosition::LEFT ||
+          tabBarPosition == AutoTabBarPosition::TOP))) {
+        // The sidebar is the first child for both LEFT and TOP layouts, so
+        // moving up from the content has to walk the children backwards.
         offset = -1;
     }
 

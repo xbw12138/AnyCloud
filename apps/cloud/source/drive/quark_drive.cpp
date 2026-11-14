@@ -377,6 +377,14 @@ void QuarkDrive::listFiles(
                      file.size = item.value("size", (uint64_t)0);
                      file.updatedAt = item.value("updated_at", (int64_t)0);
                      file.category = item.value("category", 0);
+                     // Cover image URL used by the grid/list cards. Quark
+                     // exposes it as `thumbnail` (larger variants and older
+                     // payloads use `big_thumbnail` / `thumb_url`).
+                     file.thumb = item.value("thumbnail", "");
+                     if (file.thumb.empty())
+                         file.thumb = item.value("big_thumbnail", "");
+                     if (file.thumb.empty())
+                         file.thumb = item.value("thumb_url", "");
                      files.push_back(std::move(file));
                  }
                  int total = root.value("metadata", json::object())

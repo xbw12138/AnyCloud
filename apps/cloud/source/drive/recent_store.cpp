@@ -66,6 +66,7 @@ void RecentStore::load() {
         file.name = item.value("name", "");
         file.size = item.value("size", (uint64_t)0);
         file.updatedAt = item.value("modified", (int64_t)0);
+        file.thumb = item.value("thumb", "");
         file.isDir = false;
         if (file.id.empty() || file.name.empty()) continue;
         this->entries.push_back(std::move(file));
@@ -80,7 +81,8 @@ void RecentStore::save() const {
         root.push_back({{"id", file.id},
                         {"name", file.name},
                         {"size", file.size},
-                        {"modified", file.updatedAt}});
+                        {"modified", file.updatedAt},
+                        {"thumb", file.thumb}});
     }
 
     std::ofstream output(nxkit::dataPath(kFileName), std::ios::trunc);

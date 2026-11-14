@@ -20,6 +20,9 @@ public:
     /// Seconds remembered for `id`, 0 when unknown.
     double position(const std::string& id) const;
 
+    /// Total length remembered for `id`, 0 when unknown.
+    double duration(const std::string& id) const;
+
     /// Remembers `seconds` for `id`. Positions at the very beginning or very
     /// close to the end are dropped (there is nothing worth resuming).
     void update(const std::string& id, double seconds, double duration);
@@ -27,11 +30,16 @@ public:
 private:
     PlaybackStore();
 
+    struct Entry {
+        double position = 0;
+        double duration = 0;
+    };
+
     void load();
     void save() const;
 
     mutable std::mutex mutex;
-    std::map<std::string, double> positions;
+    std::map<std::string, Entry> entries;
 };
 
 }  // namespace cloud

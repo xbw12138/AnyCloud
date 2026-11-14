@@ -4,7 +4,13 @@
     "files": "All files",
     "shared": "Shared",
     "favorites": "Favorites",
-    "profile": "Profile"
+    "profile": "Profile",
+    "prev": "Previous tab",
+    "next": "Next tab"
+  },
+  "library": {
+    "unit": "titles",
+    "watching": "Watching"
   },
   "login": {
     "title": "Scan to sign in",
@@ -60,7 +66,9 @@
   },
   "recent": {
     "empty_title": "No recent views yet",
-    "empty_desc": "Open a video, audio track or image and it will show up here"
+    "empty_desc": "Videos you played will show up here",
+    "play": "Play",
+    "resume": "Continue watching"
   },
   "soon": {
     "title": "Coming soon",
@@ -77,8 +85,18 @@
     "quality": "Quality",
     "resume": "Resumed",
     "no_quality": "No quality options available",
-    "hint_video": "A Play/Pause  ←/→ Seek  ↑/↓ 1 min  Y Quality  B Exit",
-    "hint_audio": "A Play/Pause  ←/→ Seek  B Exit"
+    "prev": "Previous",
+    "next": "Next",
+    "loop": "Loop",
+    "loop_off": "Loop off",
+    "loop_one": "Loop one",
+    "loop_all": "Loop all",
+    "playlist": "Playlist",
+    "playlist_empty": "This is the only video here",
+    "first": "Already at the first video",
+    "last": "Already at the last video",
+    "hint_video": "A Play/Pause  ←/→ Seek  L/R Prev/Next  X Loop  + Playlist  Y Quality  B Exit",
+    "hint_audio": "A Play/Pause  ←/→ Seek  L/R Prev/Next  X Loop  + Playlist  B Exit"
   },
   "image": {
     "loading": "Loading…",

@@ -6,14 +6,25 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstring>
 #include <ctime>
+#include <deque>
+#include <exception>
+#include <memory>
+#include <mutex>
+#include <set>
+#include <unordered_map>
 
+#include "cpr/async.h"
 #include "cloud/drive/drive_manager.hpp"
+#include "cloud/drive/playback_store.hpp"
 #include "cloud/drive/recent_store.hpp"
 #include "cloud/pages/image_viewer.hpp"
 #include "cloud/pages/login_page.hpp"
 #include "cloud/pages/player_page.hpp"
 #include "cloud/ui/cloud_empty_view.hpp"
+#include "nxkit/http_client.hpp"
 #include "nxkit/ui/recycling_grid.hpp"
 
 using namespace brls::literals;
@@ -32,10 +43,12 @@ static void listLog(const std::string& line) {
 }
 
 static const int kPageSize = 50;
-// Tile height: 96px cover band plus two lines of text.
-static const float kGridRowHeight = 168;
+// Tile height: 124px poster cover plus two lines of text.
+static const float kGridRowHeight = 196;
 // Single column row height.
 static const float kListRowHeight  = 96;
+// The home screen only ever shows the last handful of videos.
+static const size_t kHomeMaxItems = 8;
 
 static std::string lowerName(const std::string& name) {
     std::string value = name;
@@ -216,6 +229,231 @@ public:
     }
 };
 
+/// Downloaded cover images, kept as encoded bytes so recycled cells can show
+/// them again without a second request.
+class ThumbCache {
+public:
+    static ThumbCache& instance() {
+        static ThumbCache cache;
+        return cache;
+    }
+
+    bool get(const std::string& url, std::string* out) {
+        std::lock_guard<std::mutex> lock(this->mutex);
+        auto it = this->items.find(url);
+        if (it == this->items.end()) return false;
+        *out = it->second;
+        return true;
+    }
+
+    void put(const std::string& url, const std::string& bytes) {
+        if (bytes.empty()) return;
+        std::lock_guard<std::mutex> lock(this->mutex);
+        // Browsing a huge folder should not grow this forever; dropping the
+        // whole cache only costs a few re-downloads.
+        if (this->items.size() >= 64) this->items.clear();
+        this->items.emplace(url, bytes);
+    }
+
+private:
+    std::mutex mutex;
+    std::unordered_map<std::string, std::string> items;
+};
+
+/// Cover image drawn with rounded corners. brls::Image cannot follow the
+/// card's radii, which would let the cover bleed over the tile corners.
+class CoverImageView : public brls::View {
+public:
+    ~CoverImageView() override {
+        // Do not invalidate here: the parent may already be gone.
+        if (this->texture > 0) {
+            if (NVGcontext* vg = brls::Application::getNVGContext())
+                nvgDeleteImage(vg, this->texture);
+        }
+    }
+
+    void setCornerRadii(float top, float bottom) {
+        this->setCornerRadii(top, top, bottom, bottom);
+    }
+
+    void setCornerRadii(float topLeft, float topRight, float bottomRight,
+                        float bottomLeft) {
+        if (this->radiusTL == topLeft && this->radiusTR == topRight &&
+            this->radiusBR == bottomRight && this->radiusBL == bottomLeft)
+            return;
+        this->radiusTL = topLeft;
+        this->radiusTR = topRight;
+        this->radiusBR = bottomRight;
+        this->radiusBL = bottomLeft;
+        this->invalidate();
+    }
+
+    void clearImage() {
+        if (this->texture <= 0) return;
+        if (NVGcontext* vg = brls::Application::getNVGContext())
+            nvgDeleteImage(vg, this->texture);
+        this->texture = 0;
+        this->invalidate();
+    }
+
+    bool setImageData(const std::string& bytes) {
+        if (bytes.empty()) return false;
+        NVGcontext* vg = brls::Application::getNVGContext();
+        if (!vg) return false;
+        this->clearImage();
+        int texture = nvgCreateImageMem(vg, 0, (unsigned char*)bytes.data(),
+                                        (int)bytes.size());
+        if (texture <= 0) return false;
+        this->texture = texture;
+        this->invalidate();
+        return true;
+    }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        if (this->texture <= 0 || width <= 0 || height <= 0) return;
+        int imageWidth = 0;
+        int imageHeight = 0;
+        nvgImageSize(vg, this->texture, &imageWidth, &imageHeight);
+        if (imageWidth <= 0 || imageHeight <= 0) return;
+        // Cover fit: scale up and crop the overflow around the center.
+        float scale = std::max(width / (float)imageWidth,
+                               height / (float)imageHeight);
+        float drawWidth = imageWidth * scale;
+        float drawHeight = imageHeight * scale;
+        float ox = x + (width - drawWidth) * 0.5f;
+        float oy = y + (height - drawHeight) * 0.5f;
+
+        nvgBeginPath(vg);
+        nvgRoundedRectVarying(vg, x, y, width, height, this->radiusTL,
+                              this->radiusTR, this->radiusBR, this->radiusBL);
+        nvgFillPaint(vg, nvgImagePattern(vg, ox, oy, drawWidth, drawHeight, 0,
+                                         this->texture, 1.0f));
+        nvgFill(vg);
+    }
+
+private:
+    int texture = 0;
+    float radiusTL = 0;
+    float radiusTR = 0;
+    float radiusBR = 0;
+    float radiusBL = 0;
+};
+
+/// Turns the provider's CRLF separated header block into individual headers.
+static void applyPlaybackHeaders(nxkit::HttpClient& client,
+                                 const std::string& headers) {
+    size_t pos = 0;
+    while (pos < headers.size()) {
+        size_t end = headers.find("\r\n", pos);
+        if (end == std::string::npos) end = headers.size();
+        std::string line = headers.substr(pos, end - pos);
+        pos = end + 2;
+        size_t colon = line.find(':');
+        if (colon == std::string::npos) continue;
+        std::string name = line.substr(0, colon);
+        std::string value = line.substr(colon + 1);
+        while (!value.empty() && value.front() == ' ') value.erase(value.begin());
+        if (!name.empty() && !value.empty()) client.setHeader(name, value);
+    }
+}
+
+/// Downloads cover images with a small concurrency cap. A poster wall asks
+/// for dozens of images at once and the Switch cannot hold that many TLS
+/// sessions, so requests are queued instead of spawning one thread each.
+class ThumbQueue {
+public:
+    static ThumbQueue& instance() {
+        static ThumbQueue queue;
+        return queue;
+    }
+
+    void submit(const std::string& url, const std::string& headers,
+                std::function<void(const std::string&)> callback) {
+        std::string cached;
+        if (ThumbCache::instance().get(url, &cached)) {
+            callback(cached);
+            return;
+        }
+
+        bool start = false;
+        {
+            std::lock_guard<std::mutex> lock(this->mutex);
+            // Cards that share a poster (a season, a folder's thumbnails)
+            // must not each open their own request.
+            auto waiting = this->waiting.find(url);
+            if (waiting != this->waiting.end()) {
+                waiting->second.push_back(std::move(callback));
+                return;
+            }
+            this->waiting.emplace(
+                url, std::vector<std::function<void(const std::string&)>>{
+                         std::move(callback)});
+            this->queue.push_back({url, headers});
+            if (this->active < kMaxActive) {
+                this->active += 1;
+                start = true;
+            }
+        }
+        if (start) this->start(url, headers);
+    }
+
+private:
+    struct Job {
+        std::string url;
+        std::string headers;
+    };
+
+    void start(std::string url, std::string headers) {
+        cpr::async([url, headers] {
+            std::string body;
+            try {
+                nxkit::HttpClient client;
+                applyPlaybackHeaders(client, headers);
+                client.setTimeout(15000);
+                nxkit::HttpResult result = client.get(url);
+                if (result.ok) body = std::move(result.body);
+            } catch (const std::exception&) {
+            }
+            if (!body.empty()) ThumbCache::instance().put(url, body);
+            brls::sync(
+                [url, body] { ThumbQueue::instance().finish(url, body); });
+        });
+    }
+
+    void finish(const std::string& url, const std::string& body) {
+        std::vector<std::function<void(const std::string&)>> callbacks;
+        Job next;
+        bool start = false;
+        {
+            std::lock_guard<std::mutex> lock(this->mutex);
+            auto it = this->waiting.find(url);
+            if (it != this->waiting.end()) {
+                callbacks = std::move(it->second);
+                this->waiting.erase(it);
+            }
+            if (!this->queue.empty()) {
+                next = std::move(this->queue.front());
+                this->queue.pop_front();
+                start = true;
+            } else {
+                this->active -= 1;
+            }
+        }
+        for (auto& callback : callbacks)
+            if (callback) callback(body);
+        if (start) this->start(next.url, next.headers);
+    }
+
+    static const int kMaxActive = 2;
+    std::mutex mutex;
+    std::deque<Job> queue;
+    std::unordered_map<std::string,
+                       std::vector<std::function<void(const std::string&)>>>
+        waiting;
+    int active = 0;
+};
+
 /// Cover band of the grid card. It paints a soft tint of the file type with
 /// rounded top corners matching the card, and hosts the type badge.
 class CoverPlate : public brls::Box {
@@ -268,9 +506,16 @@ public:
         this->setBackgroundColor(theme["cloud/surface"]);
         this->setBorderThickness(0);
 
-        // The thumb holds the type badge: a plain icon slot in list mode and
-        // the tinted cover band of the grid card.
+        // The thumb holds the cover image and the type badge: a plain icon
+        // slot in list mode and the tinted cover band of the grid card.
         this->thumb = new CoverPlate();
+        this->cover = new CoverImageView();
+        // Overlay: the cover sits above the tint plate and below the badge
+        // without taking part in the row layout of the plate.
+        this->cover->setPositionType(brls::PositionType::ABSOLUTE);
+        this->cover->setPositionTop(0);
+        this->cover->setPositionLeft(0);
+        this->thumb->addView(this->cover);
         this->badge = new FileTypeBadge();
         this->thumb->addView(this->badge);
         this->addView(this->thumb);
@@ -328,6 +573,8 @@ public:
         this->chevron->setVisibility(this->listMode && file.isDir
                                          ? brls::Visibility::VISIBLE
                                          : brls::Visibility::GONE);
+
+        this->loadCover(file);
         this->refreshFocusStyle();
     }
 
@@ -345,7 +592,40 @@ public:
         return new FileRowCell(page);
     }
 
+    ~FileRowCell() override { *this->alive = false; }
+
 private:
+    /// Shows the file's cover thumbnail when the provider exposes one. The
+    /// badge stays as the fallback while the image is missing or loading.
+    void loadCover(const DriveFile& file) {
+        const uint64_t generation = ++this->coverGeneration;
+        this->cover->clearImage();
+        this->badge->setVisibility(brls::Visibility::VISIBLE);
+        if (file.isDir || file.thumb.empty()) return;
+
+        const std::string url = file.thumb;
+        std::string cached;
+        if (ThumbCache::instance().get(url, &cached)) {
+            this->applyCover(cached, generation);
+            return;
+        }
+        this->page->loadThumbnail(
+            url, [this, weak = std::weak_ptr<bool>(this->alive),
+                  generation](const std::string& bytes) {
+                auto alive = weak.lock();
+                if (!alive || !*alive) return;
+                this->applyCover(bytes, generation);
+            });
+    }
+
+    void applyCover(const std::string& bytes, uint64_t generation) {
+        // Ignore results that belong to a file the cell no longer shows.
+        if (generation != this->coverGeneration) return;
+        if (!this->cover->setImageData(bytes)) return;
+        this->badge->setVisibility(brls::Visibility::GONE);
+        this->invalidate();
+    }
+
     void applyLayout() {
         if (this->listMode) {
             // Single column: icon, title and metadata on one line.
@@ -360,6 +640,8 @@ private:
             this->thumb->setDimensions(56, 56);
             this->thumb->setMarginRight(18);
             this->badge->setDimensions(56, 56);
+            this->cover->setDimensions(56, 56);
+            this->cover->setCornerRadii(12, 12);
 
             this->textBox->setGrow(1);
             this->textBox->setPadding(0);
@@ -371,7 +653,7 @@ private:
             this->chevron->setDimensions(22, 22);
             this->chevron->setMarginLeft(12);
         } else {
-            // Multi column tile: tinted cover band on top, text below.
+            // Poster tile: the cover fills most of the card, text below.
             this->setAxis(brls::Axis::COLUMN);
             this->setAlignItems(brls::AlignItems::FLEX_START);
             this->setPadding(0);
@@ -381,9 +663,12 @@ private:
             this->thumb->setPlateVisible(true);
             this->thumb->setCornerRadius(18);
             this->thumb->setWidthPercentage(100);
-            this->thumb->setHeight(96);
+            this->thumb->setHeight(124);
             this->thumb->setMarginRight(0);
             this->badge->setDimensions(44, 44);
+            this->cover->setWidthPercentage(100);
+            this->cover->setHeight(124);
+            this->cover->setCornerRadii(18, 0);
 
             this->textBox->setGrow(0);
             this->textBox->setPadding(12, 16, 14, 16);
@@ -411,11 +696,14 @@ private:
     FileListPage* page;
     bool listMode = false;
     CoverPlate* thumb = nullptr;
+    CoverImageView* cover = nullptr;
     brls::Box* textBox = nullptr;
     FileTypeBadge* badge = nullptr;
     brls::Label* nameLabel = nullptr;
     brls::Label* metaLabel = nullptr;
     ChevronView* chevron = nullptr;
+    uint64_t coverGeneration = 0;
+    std::shared_ptr<bool> alive = std::make_shared<bool>(true);
 };
 
 // -----------------------------------------------------------------------------
@@ -480,6 +768,20 @@ FileListPage::FileListPage(
 
 FileListPage::~FileListPage() { *this->alive = false; }
 
+void FileListPage::loadThumbnail(
+    const std::string& url, std::function<void(const std::string&)> callback) {
+    // The recent page can be shown before login, so the provider may be null.
+    std::string headers =
+        this->provider ? this->provider->playbackHeaders() : std::string();
+    auto alive = this->alive;
+    ThumbQueue::instance().submit(
+        url, headers,
+        [alive, callback = std::move(callback)](const std::string& bytes) {
+            if (!*alive || bytes.empty()) return;
+            callback(bytes);
+        });
+}
+
 void FileListPage::willAppear(bool resetState) {
     brls::Box::willAppear(resetState);
     // Recent views are local, refresh them whenever the tab is shown again.
@@ -505,8 +807,15 @@ brls::View* FileListPage::getDefaultFocus() {
 }
 
 void FileListPage::setup() {
-    brls::Theme theme = brls::Application::getTheme();
     this->setAxis(brls::Axis::COLUMN);
+
+    // The recent tab is the TV home screen, not a file listing.
+    if (this->mode == Mode::Recent) {
+        this->buildHome();
+        return;
+    }
+
+    brls::Theme theme = brls::Application::getTheme();
 
     brls::Box* header = new brls::Box(brls::Axis::COLUMN);
     header->setPadding(16, 40, 12, 40);
@@ -595,27 +904,7 @@ void FileListPage::setup() {
 
     this->addView(header);
 
-    this->grid = new RecyclingGrid();
-    this->grid->setGrow(1);
-    // This page draws its own empty-state illustration; the grid's built-in
-    // placeholder would flash while a folder is loading.
-    this->grid->setHintEnabled(false);
-    this->grid->spanCount          = this->listMode ? 1 : 4;
-    this->grid->estimatedRowHeight =
-        this->listMode ? kListRowHeight : kGridRowHeight;
-    this->grid->estimatedRowSpace = this->listMode ? 8 : 14;
-    this->grid->setPaddingTop(4);
-    this->grid->setPaddingBottom(32);
-    this->grid->setPaddingLeft(40);
-    this->grid->setPaddingRight(40);
-
-    auto* source = new FileListDataSource(this);
-    this->dataSource = source;
-    this->grid->registerCell("file", [this] { return FileRowCell::create(this); });
-    this->grid->setDataSource(source);
-    this->grid->onNextPage([this] { this->loadNextPage(); });
-
-    this->addView(this->grid);
+    this->buildGrid();
 
     this->emptyView = new CloudEmptyView();
     this->emptyView->setVisibility(brls::Visibility::GONE);
@@ -645,21 +934,51 @@ void FileListPage::setup() {
     this->updateBreadcrumb();
 }
 
-void FileListPage::updateBreadcrumb() {
-    if (this->mode == Mode::Recent) {
-        this->breadcrumb->setText("cloud/tab/recent"_i18n);
-        this->pathLabel->setText("");
-        this->pathLabel->setVisibility(brls::Visibility::GONE);
-        return;
-    }
+void FileListPage::buildGrid() {
+    this->grid = new RecyclingGrid();
+    this->grid->setGrow(1);
+    // This page draws its own empty-state illustration; the grid's built-in
+    // placeholder would flash while a folder is loading.
+    this->grid->setHintEnabled(false);
+    this->grid->spanCount          = this->listMode ? 1 : 4;
+    this->grid->estimatedRowHeight =
+        this->listMode ? kListRowHeight : kGridRowHeight;
+    this->grid->estimatedRowSpace = this->listMode ? 8 : 14;
+    this->grid->setPaddingTop(4);
+    this->grid->setPaddingBottom(32);
+    this->grid->setPaddingLeft(40);
+    this->grid->setPaddingRight(40);
 
+    auto* source = new FileListDataSource(this);
+    this->dataSource = source;
+    this->grid->registerCell("file", [this] { return FileRowCell::create(this); });
+    this->grid->setDataSource(source);
+    // Recent never pages: loadNextPage() returns immediately there.
+    this->grid->onNextPage([this] { this->loadNextPage(); });
+
+    this->addView(this->grid);
+}
+
+void FileListPage::buildHome() {
+    // The recent tab reuses the file browser grid so both tabs share the same
+    // look and the same grid focus handling (DPAD and analog stick).
+    this->buildGrid();
+
+    this->emptyView = new CloudEmptyView();
+    this->emptyView->setVisibility(brls::Visibility::GONE);
+    this->addView(this->emptyView);
+}
+
+void FileListPage::updateBreadcrumb() {
     bool picker = this->mode == Mode::Picker;
     size_t depth = this->pathStack.size();
 
     // Big title is the folder being browsed, not the whole trail.
-    std::string title = depth > 1 ? this->pathStack.back().second
-                                  : (picker ? "cloud/files/picker_title"_i18n
-                                            : "cloud/files/root"_i18n);
+    std::string title =
+        !this->pathStack.back().second.empty()
+            ? this->pathStack.back().second
+            : (picker ? "cloud/files/picker_title"_i18n
+                      : "cloud/files/root"_i18n);
     this->breadcrumb->setText(title);
 
     // Small line under it holds the parent trail (without the current
@@ -700,7 +1019,9 @@ void FileListPage::showGrid() {
 }
 
 void FileListPage::showLoginState() {
-    this->grid->setVisibility(brls::Visibility::GONE);
+    // The recent page has no grid or header labels: only the empty state is
+    // shared between the two layouts.
+    if (this->grid) this->grid->setVisibility(brls::Visibility::GONE);
     this->emptyView->setVisibility(brls::Visibility::VISIBLE);
     this->emptyView->setContent(CloudEmptyView::Mode::Login,
                                 "cloud/files/login_title"_i18n,
@@ -709,10 +1030,12 @@ void FileListPage::showLoginState() {
         "cloud/files/login_action"_i18n, [] {
             brls::Application::pushActivity(new LoginPage());
         });
-    this->subtitleLabel->setText("cloud/files/not_signed_in"_i18n);
+    if (this->subtitleLabel)
+        this->subtitleLabel->setText("cloud/files/not_signed_in"_i18n);
 
     // Move focus away from a list that is about to disappear.
-    if (isFocusWithin(brls::Application::getCurrentFocus(), this->grid)) {
+    if (this->grid &&
+        isFocusWithin(brls::Application::getCurrentFocus(), this->grid)) {
         if (auto* target = this->emptyView->focusTarget())
             brls::Application::giveFocus(target);
     }
@@ -805,18 +1128,48 @@ void FileListPage::refreshRecent() {
     this->total = -1;
 
     auto* source = (FileListDataSource*)this->dataSource;
-    source->files = RecentStore::instance().files();
-    this->applySort();
+    if (!source || !this->grid) return;
+
+    // The home screen is just the last played videos, newest first. Audio and
+    // pictures stay in the browser: a TV home is built around covers.
+    std::vector<DriveFile> files;
+    for (const DriveFile& file : RecentStore::instance().files()) {
+        if (file.mediaKind() != MediaKind::Video) continue;
+        files.push_back(file);
+        if (files.size() >= kHomeMaxItems) break;
+    }
+
+    // Rebuilding the grid throws every cell away and re-focuses it, so skip the
+    // reload when the tab is re-entered without any new playback.
+    bool unchanged = files.size() == source->files.size();
+    for (size_t i = 0; unchanged && i < files.size(); i++)
+        unchanged = files[i].id == source->files[i].id;
+    if (unchanged && this->grid->getVisibility() == brls::Visibility::VISIBLE) {
+        if (!files.empty()) return;
+    }
+
+    source->files = std::move(files);
 
     if (source->files.empty()) {
-        this->grid->reloadData();
-        this->showEmptyState();
+        this->grid->setVisibility(brls::Visibility::GONE);
+        if (!this->emptyView) return;
+        this->emptyView->setVisibility(brls::Visibility::VISIBLE);
+        this->emptyView->setContent(CloudEmptyView::Mode::Empty,
+                                    "cloud/recent/empty_title"_i18n,
+                                    "cloud/recent/empty_desc"_i18n);
+        this->emptyView->setAction("", nullptr);
+        if (isFocusWithin(brls::Application::getCurrentFocus(), this->grid)) {
+            if (auto* target = this->emptyView->focusTarget())
+                brls::Application::giveFocus(target);
+        }
         return;
     }
 
-    this->showGrid();
-    this->updateSubtitle();
+    if (this->emptyView)
+        this->emptyView->setVisibility(brls::Visibility::GONE);
+    this->grid->setVisibility(brls::Visibility::VISIBLE);
     this->grid->reloadData();
+    listLog("ui: home refresh n=" + std::to_string(source->files.size()));
 }
 
 void FileListPage::applySort() {
@@ -841,6 +1194,7 @@ void FileListPage::applySort() {
 }
 
 void FileListPage::showSortMenu() {
+    if (this->mode == Mode::Recent) return;
     std::vector<std::string> options = {
         "cloud/files/sort_time"_i18n,
         "cloud/files/sort_name"_i18n,
@@ -860,6 +1214,7 @@ void FileListPage::showSortMenu() {
 }
 
 void FileListPage::toggleViewMode() {
+    if (this->mode == Mode::Recent) return;
     this->listMode = !this->listMode;
     if (this->viewToggle)
         this->viewToggle->setText(this->listMode
@@ -1007,14 +1362,46 @@ void FileListPage::openItem(size_t index) {
         RecentStore::instance().add(file);
 
     switch (kind) {
-        case MediaKind::Video:
+        case MediaKind::Video: {
+            std::vector<DriveFile> playlist;
+            size_t start = 0;
+            if (this->mode != Mode::Picker) {
+                // Queue every video of this directory so the player can
+                // continue with the next episode automatically.
+                for (const auto& f : source->files) {
+                    if (f.mediaKind() != MediaKind::Video) continue;
+                    if (f.id == file.id) start = playlist.size();
+                    playlist.push_back(f);
+                }
+            }
+            if (playlist.empty()) {
+                playlist.push_back(file);
+                start = 0;
+            }
             brls::Application::pushActivity(new brls::Activity(
-                new PlayerPage(this->provider, file, false)));
+                new PlayerPage(this->provider, std::move(playlist), start,
+                               false)));
             break;
-        case MediaKind::Audio:
+        }
+        case MediaKind::Audio: {
+            std::vector<DriveFile> playlist;
+            size_t start = 0;
+            if (this->mode != Mode::Picker) {
+                for (const auto& f : source->files) {
+                    if (f.mediaKind() != MediaKind::Audio) continue;
+                    if (f.id == file.id) start = playlist.size();
+                    playlist.push_back(f);
+                }
+            }
+            if (playlist.empty()) {
+                playlist.push_back(file);
+                start = 0;
+            }
             brls::Application::pushActivity(new brls::Activity(
-                new PlayerPage(this->provider, file, true)));
+                new PlayerPage(this->provider, std::move(playlist), start,
+                               true)));
             break;
+        }
         case MediaKind::Image: {
             std::vector<DriveFile> images;
             size_t start = 0;
@@ -1034,6 +1421,7 @@ void FileListPage::openItem(size_t index) {
 }
 
 void FileListPage::showItemActions(size_t index) {
+    if (this->mode != Mode::Browse) return;
     if (this->mode == Mode::Picker) return;
     auto* source = (FileListDataSource*)this->dataSource;
     if (index >= source->files.size()) return;

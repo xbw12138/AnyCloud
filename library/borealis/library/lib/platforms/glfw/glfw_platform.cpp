@@ -57,6 +57,11 @@ GLFWPlatform::GLFWPlatform()
     // Init glfw
     glfwSetErrorCallback(glfwErrorCallback);
     glfwInitHint(GLFW_JOYSTICK_HAT_BUTTONS, GLFW_TRUE);
+#ifdef __APPLE__
+    // GLFW otherwise chdir()s into "<exe dir>/resources" on macOS, which breaks
+    // the relative "./resources/..." paths the resources are loaded from.
+    glfwInitHint(GLFW_COCOA_CHDIR_RESOURCES, GLFW_FALSE);
+#endif
 
     if (!glfwInit())
     {

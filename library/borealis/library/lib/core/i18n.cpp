@@ -42,6 +42,16 @@ static void loadLocale(std::string locale, nlohmann::json* target)
 {
     std::string localePath = BRLS_ASSET("i18n/" + locale);
 
+#ifdef __SWITCH__
+    // The NRO embeds its translations at the romfs root. Prefer them so an
+    // outdated `resources` folder on the SD card cannot shadow new strings.
+    {
+        std::string romfsPath = "romfs:/i18n/" + locale;
+        if (std::filesystem::exists(romfsPath))
+            localePath = romfsPath;
+    }
+#endif
+
     if (!std::filesystem::exists(localePath))
     {
         Logger::error("Cannot load locale {}: directory {} doesn't exist", locale, localePath);

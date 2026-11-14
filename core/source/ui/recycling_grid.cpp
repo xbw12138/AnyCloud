@@ -595,9 +595,9 @@ brls::View* RecyclingGrid::getNextCellFocus(brls::FocusDirection direction,
             int lastRow  = (int)((count - 1) / spanCount);
             int lastItem = lastRow * spanCount + column;
             row_currentFocusIndex = lastItem < (int)count ? lastItem : (int)count - 1;
-        } else if (row_currentFocusIndex < 0) {
-            row_currentFocusIndex = 0;
         }
+        // Keep moving up on the first row out of the grid: it has to bubble to
+        // the parent so the top tab bar becomes reachable.
 
         while (!row_currentFocus && row_currentFocusIndex >= 0 &&
                row_currentFocusIndex < (int)count) {

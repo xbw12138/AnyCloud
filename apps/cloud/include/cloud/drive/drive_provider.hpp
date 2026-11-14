@@ -23,6 +23,10 @@ struct DriveFile {
     /// Provider specific category hint (Quark: 1 == video).
     int category = 0;
     std::string thumb;
+    /// Filled in by the library scanner: the folder this file lives in, so the
+    /// home screen can group a folder's videos into one series.
+    std::string parentId;
+    std::string parentName;
 
     MediaKind mediaKind() const;
 };

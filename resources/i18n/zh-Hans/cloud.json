@@ -4,7 +4,13 @@
     "files": "全部文件",
     "shared": "分享文件",
     "favorites": "云收藏",
-    "profile": "我的"
+    "profile": "我的",
+    "prev": "上一栏",
+    "next": "下一栏"
+  },
+  "library": {
+    "unit": "部",
+    "watching": "观看至"
   },
   "login": {
     "title": "扫码登录",
@@ -60,7 +66,9 @@
   },
   "recent": {
     "empty_title": "还没有观看记录",
-    "empty_desc": "打开视频、音频或图片后，会显示在这里"
+    "empty_desc": "播放过的视频会显示在这里",
+    "play": "播放",
+    "resume": "继续观看"
   },
   "soon": {
     "title": "即将上线",
@@ -77,8 +85,18 @@
     "quality": "清晰度",
     "resume": "继续播放",
     "no_quality": "暂无可用清晰度",
-    "hint_video": "A 播放/暂停  ←/→ 快退/快进  ↑/↓ 1 分钟  Y 清晰度  B 退出",
-    "hint_audio": "A 播放/暂停  ←/→ 快退/快进  B 退出"
+    "prev": "上一集",
+    "next": "下一集",
+    "loop": "循环",
+    "loop_off": "循环关闭",
+    "loop_one": "单集循环",
+    "loop_all": "列表循环",
+    "playlist": "播放目录",
+    "playlist_empty": "当前只有这一个视频",
+    "first": "已经是第一个了",
+    "last": "已经是最后一个了",
+    "hint_video": "A 播放/暂停  ←/→ 快退/快进  L/R 上一集/下一集  X 循环  + 播放目录  Y 清晰度  B 退出",
+    "hint_audio": "A 播放/暂停  ←/→ 快退/快进  L/R 上一集/下一集  X 循环  + 播放目录  B 退出"
   },
   "image": {
     "loading": "加载中…",

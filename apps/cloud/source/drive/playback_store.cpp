@@ -33,8 +33,14 @@ PlaybackStore::PlaybackStore() { this->load(); }
 
 double PlaybackStore::position(const std::string& id) const {
     std::lock_guard<std::mutex> lock(this->mutex);
-    auto it = this->positions.find(id);
-    return it == this->positions.end() ? 0.0 : it->second;
+    auto it = this->entries.find(id);
+    return it == this->entries.end() ? 0.0 : it->second.position;
+}
+
+double PlaybackStore::duration(const std::string& id) const {
+    std::lock_guard<std::mutex> lock(this->mutex);
+    auto it = this->entries.find(id);
+    return it == this->entries.end() ? 0.0 : it->second.duration;
 }
 
 void PlaybackStore::update(const std::string& id, double seconds,
@@ -46,15 +52,22 @@ void PlaybackStore::update(const std::string& id, double seconds,
     if (std::isfinite(seconds) == false) drop = true;
 
     std::lock_guard<std::mutex> lock(this->mutex);
+    bool changed = false;
     if (drop) {
-        if (this->positions.erase(id) == 0) return;
+        changed = this->entries.erase(id) > 0;
     } else {
-        double& slot = this->positions[id];
+        Entry& slot = this->entries[id];
         // Avoid pointless disk writes for sub-second differences.
-        if (std::abs(slot - seconds) < 1.0) return;
-        slot = seconds;
+        if (std::abs(slot.position - seconds) >= 1.0) {
+            slot.position = seconds;
+            changed = true;
+        }
+        if (duration > 0 && std::abs(slot.duration - duration) >= 1.0) {
+            slot.duration = duration;
+            changed = true;
+        }
     }
-    this->save();
+    if (changed) this->save();
 }
 
 void PlaybackStore::load() {
@@ -65,9 +78,18 @@ void PlaybackStore::load() {
     if (root.is_discarded() || !root.is_object()) return;
 
     for (auto it = root.begin(); it != root.end(); ++it) {
-        if (!it.value().is_number()) continue;
-        double seconds = it.value().get<double>();
-        if (seconds > 0) this->positions[it.key()] = seconds;
+        // Older builds stored a bare number; newer ones store both the
+        // position and the duration so the recent page can draw a progress bar.
+        Entry entry;
+        if (it.value().is_number()) {
+            entry.position = it.value().get<double>();
+        } else if (it.value().is_object()) {
+            entry.position = it.value().value("position", 0.0);
+            entry.duration = it.value().value("duration", 0.0);
+        } else {
+            continue;
+        }
+        if (entry.position > 0) this->entries[it.key()] = entry;
     }
 }
 
@@ -75,8 +97,9 @@ void PlaybackStore::save() const {
     nxkit::ensureDataDirectory();
 
     nlohmann::json root = nlohmann::json::object();
-    for (const auto& entry : this->positions)
-        root[entry.first] = entry.second;
+    for (const auto& entry : this->entries)
+        root[entry.first] = {{"position", entry.second.position},
+                             {"duration", entry.second.duration}};
 
     std::ofstream output(nxkit::dataPath(kFileName));
     if (!output.is_open()) return;

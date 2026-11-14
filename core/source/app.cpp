@@ -93,6 +93,13 @@ int runApp(const AppConfig& config) {
     ensureDataDirectory();
     Config::instance().load(config.configPath);
 
+    // borealis' Platform::APP_LOCALE_DEFAULT is initialised from LOCALE_AUTO in
+    // a cross-translation-unit static initialiser that can run before
+    // LOCALE_AUTO is constructed, leaving it empty on desktop. Restore the
+    // default so BOREALIS_LANG / the system locale is honoured.
+    if (brls::Platform::APP_LOCALE_DEFAULT.empty())
+        brls::Platform::APP_LOCALE_DEFAULT = brls::LOCALE_AUTO;
+
     curl_global_init(CURL_GLOBAL_DEFAULT);
     cpr::async::startup(THREAD_POOL_MIN_THREAD_NUM, THREAD_POOL_MAX_THREAD_NUM,
                         std::chrono::milliseconds(5000));

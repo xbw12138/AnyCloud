@@ -45,6 +45,10 @@ public:
     void openItem(size_t index);
     /// Shows the actions menu for the item at `index` (X button).
     void showItemActions(size_t index);
+    /// Downloads a cover image with the provider's headers. `callback` runs
+    /// on the UI thread with the encoded bytes (empty on failure).
+    void loadThumbnail(const std::string& url,
+                       std::function<void(const std::string&)> callback);
 
     /// True when the grid is showing tall single-column rows.
     bool isListMode() const { return this->listMode; }
@@ -56,6 +60,10 @@ public:
 private:
     enum class SortMode { Time, Name };
     void setup();
+    /// Builds the shared file grid (used by both tabs).
+    void buildGrid();
+    /// Builds the TV home layout: the same grid, fed with recent videos.
+    void buildHome();
     void enterFolder(const std::string& dirId, const std::string& name);
     bool goUp();
     void refresh();
@@ -96,6 +104,7 @@ private:
     RecyclingGrid* grid = nullptr;
     RecyclingGridDataSource* dataSource = nullptr;
     CloudEmptyView* emptyView = nullptr;
+
     brls::Label* breadcrumb = nullptr;
     brls::Label* pathLabel = nullptr;
     brls::Label* subtitleLabel = nullptr;
