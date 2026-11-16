@@ -49,7 +49,7 @@ brls::View* AutoTabFrame::create() { return new AutoTabFrame(); }
 namespace {
 // 根页面按 B 时弹确认框，避免误触直接退出。
 void confirmQuit() {
-    auto* dialog = new brls::Dialog("确定要退出 夸克网盘 吗？"_i18n);
+    auto* dialog = new brls::Dialog("确定要退出 AnyCloud 吗？"_i18n);
     dialog->addButton("取消"_i18n, [] {});
     dialog->addButton("退出"_i18n, [] { brls::Application::quit(); });
     dialog->setCancelable(true);

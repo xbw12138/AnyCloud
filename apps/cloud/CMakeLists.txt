@@ -16,7 +16,7 @@ endif()
 nxkit_add_app(cloud
         TITLEID "0x010FF000FFFF0102"
         AUTHOR "xbw12138"
-        DISPLAY_NAME "夸克网盘"
+        DISPLAY_NAME "AnyCloud"
         ICON "${NXKIT_RESOURCES_DIR}/img/cloud-icon.jpg"
         SOURCES
         source/main.cpp

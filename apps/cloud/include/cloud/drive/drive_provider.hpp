@@ -62,7 +62,7 @@ public:
 
     /// Stable identifier used in config keys, e.g. "quark".
     virtual std::string id() const = 0;
-    /// Human readable name, e.g. "夸克网盘".
+    /// Human readable name, e.g. "AnyCloud".
     virtual std::string name() const = 0;
     /// Id of the root directory ("0" on Quark, "root" on Aliyun).
     virtual std::string rootId() const { return "0"; }

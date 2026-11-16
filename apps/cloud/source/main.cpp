@@ -44,10 +44,10 @@ int main(int argc, char** argv) {
 #endif
 
     nxkit::AppConfig config;
-    config.title = "夸克网盘";
-    // Quark blue used by the pill tabs and focus rings.
-    config.lightAccent = nvgRGB(30, 110, 240);
-    config.darkAccent = nvgRGB(64, 140, 255);
+    config.title = "AnyCloud";
+    // Teal accent matching the AnyCloud icon.
+    config.lightAccent = nvgRGB(20, 190, 140);
+    config.darkAccent = nvgRGB(60, 220, 170);
 
     // Temporary: CLOUD_DEBUG_LOGIN=1 opens the QR login page directly.
     const bool debugLogin = std::getenv("CLOUD_DEBUG_LOGIN") != nullptr;

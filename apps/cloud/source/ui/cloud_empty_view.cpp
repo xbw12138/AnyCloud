@@ -27,24 +27,22 @@ void drawCloud(NVGcontext* vg, float cx, float cy, float s, NVGcolor fill) {
     nvgFill(vg);
 }
 
-void drawQuarkMark(NVGcontext* vg, float cx, float cy, float s, NVGcolor fill,
-                   NVGcolor stroke) {
-    // Cloud silhouette with the Quark "Q" ring inside, matching the app icon.
+void drawAnyCloudMark(NVGcontext* vg, float cx, float cy, float s, NVGcolor fill,
+                      NVGcolor stroke) {
+    // Cloud silhouette with an upward arrow, matching the AnyCloud icon.
     drawCloud(vg, cx, cy - 6 * s, s * 1.2f, fill);
 
     nvgBeginPath(vg);
-    nvgCircle(vg, cx + 12 * s, cy + 4 * s, 17 * s);
-    nvgStrokeColor(vg, stroke);
-    nvgStrokeWidth(vg, 4 * s);
-    nvgStroke(vg);
-
-    nvgBeginPath(vg);
-    nvgMoveTo(vg, cx + 24 * s, cy + 16 * s);
-    nvgLineTo(vg, cx + 33 * s, cy + 25 * s);
-    nvgLineCap(vg, NVG_ROUND);
-    nvgStrokeColor(vg, stroke);
-    nvgStrokeWidth(vg, 4 * s);
-    nvgStroke(vg);
+    nvgMoveTo(vg, cx, cy - 15 * s);
+    nvgLineTo(vg, cx + 13 * s, cy - 2 * s);
+    nvgLineTo(vg, cx + 5 * s, cy - 2 * s);
+    nvgLineTo(vg, cx + 5 * s, cy + 13 * s);
+    nvgLineTo(vg, cx - 5 * s, cy + 13 * s);
+    nvgLineTo(vg, cx - 5 * s, cy - 2 * s);
+    nvgLineTo(vg, cx - 13 * s, cy - 2 * s);
+    nvgClosePath(vg);
+    nvgFillColor(vg, stroke);
+    nvgFill(vg);
 }
 
 void drawSparkle(NVGcontext* vg, float x, float y, float r, NVGcolor color) {
@@ -142,7 +140,7 @@ public:
 
         switch (this->mode) {
             case CloudEmptyView::Mode::Empty:
-                drawQuarkMark(vg, cx, cy + 4 * s, s, tint, strong);
+                drawAnyCloudMark(vg, cx, cy + 4 * s, s, tint, strong);
                 break;
 
             case CloudEmptyView::Mode::Login:

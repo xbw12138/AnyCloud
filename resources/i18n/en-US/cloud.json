@@ -15,7 +15,7 @@
   "login": {
     "title": "Scan to sign in",
     "requesting": "Requesting QR code…",
-    "scan": "Scan with the Quark app",
+    "scan": "Scan with the mobile app",
     "waiting": "Waiting for scan",
     "scanned": "Scanned, confirm on your phone",
     "expired": "QR code expired, tap refresh",
@@ -43,7 +43,7 @@
     "empty_picker_title": "No folders available",
     "empty_picker_desc": "There are no subfolders here, you can choose this folder",
     "login_title": "Sign in to get started",
-    "login_desc": "Scan the QR code with the Quark app to browse your drive",
+    "login_desc": "Scan the QR code with the mobile app to browse your drive",
     "login_action": "Sign in",
     "error_title": "Could not load",
     "error_desc": "Check your network connection and try again",

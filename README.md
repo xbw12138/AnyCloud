@@ -1,4 +1,4 @@
-# AnyCloud · 夸克网盘（Switch 客户端）
+# AnyCloud（Switch 云盘客户端）
 
 基于 NXKit 框架（borealis UI + NanoVG + libmpv + cpr）实现的网盘客户端，
 主要面向 Nintendo Switch（同时支持 macOS 桌面调试）。

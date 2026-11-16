@@ -20,7 +20,7 @@ endif()
 project(nsp_forwarder)
 
 set(FORWARDER_TITLEID "010FF000FFFF0103")
-set(FORWARDER_NAME "夸克网盘")
+set(FORWARDER_NAME "AnyCloud")
 set(FORWARDER_AUTHOR "xbw12138")
 set(FORWARDER_VERSION "1.0.0")
 set(FORWARDER_ICON "${CMAKE_SOURCE_DIR}/resources/img/cloud-icon.jpg")

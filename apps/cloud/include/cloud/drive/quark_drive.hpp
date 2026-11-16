@@ -16,7 +16,7 @@ public:
     QuarkDrive();
 
     std::string id() const override { return "quark"; }
-    std::string name() const override { return "夸克网盘"; }
+    std::string name() const override { return "AnyCloud"; }
 
     void loadCredentials() override;
     bool isLoggedIn() const override;
