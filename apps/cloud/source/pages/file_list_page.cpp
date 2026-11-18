@@ -1008,7 +1008,7 @@ void FileListPage::loadThumbnail(
         if (auto resolved = DriveManager::instance().find(providerId))
             source = resolved;
     }
-    std::string headers = source ? source->playbackHeaders() : std::string();
+    std::string headers = source ? source->thumbnailHeaders() : std::string();
     auto alive = this->alive;
     ThumbQueue::instance().submit(
         url, headers,

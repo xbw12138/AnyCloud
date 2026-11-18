@@ -62,6 +62,8 @@ public:
               const std::string& targetDirId, SimpleCallback callback) override;
 
     std::string playbackHeaders() const override;
+    std::string thumbnailHeaders() const override;
+    std::string downloadHeaders() const;
 
 private:
     void saveCookie();

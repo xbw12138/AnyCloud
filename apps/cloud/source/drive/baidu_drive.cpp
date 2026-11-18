@@ -169,6 +169,25 @@ std::string BaiduDrive::playbackHeaders() const {
            std::string(kWebUA);
 }
 
+std::string BaiduDrive::thumbnailHeaders() const {
+    // The thumbnail host validates the account cookie as well.
+    return this->downloadHeaders();
+}
+
+std::string BaiduDrive::downloadHeaders() const {
+    // Plain downloads are served by PCS itself: unlike playback they expect
+    // the netdisk UA and the account cookie, otherwise the CDN answers 403.
+    std::string jar;
+    {
+        std::lock_guard<std::mutex> lock(cookieMutex);
+        jar = http.cookie();
+    }
+    std::string headers = "Referer: https://pan.baidu.com/\r\nUser-Agent: " +
+                          std::string(kPanUA) + "\r\n";
+    if (!jar.empty()) headers += "Cookie: " + jar + "\r\n";
+    return headers;
+}
+
 // -----------------------------------------------------------------------------
 // Login
 // -----------------------------------------------------------------------------
@@ -357,7 +376,8 @@ void BaiduDrive::listFiles(
          {"num", std::to_string(pageSize)},
          {"channel", "chunlei"},
          {"app_id", kPanAppId},
-         {"clienttype", "0"}},
+         {"clienttype", "0"},
+         {"thumb", "1"}},
         [this, callback, page, pageSize](const nxkit::HttpResult& result) {
             this->mergeResponseCookies(result);
             if (!result.ok) return callback({}, 0, result.error);
@@ -385,6 +405,23 @@ void BaiduDrive::listFiles(
                         file.category = 2;
                     else if (category == 3)
                         file.category = 3;
+                    if (!file.isDir && item.contains("thumbs")) {
+                        json thumbs = item["thumbs"];
+                        // Some endpoints inline the thumbs map as a string.
+                        if (thumbs.is_string())
+                            thumbs = json::parse(thumbs.get<std::string>(),
+                                                 nullptr, false);
+                        if (thumbs.is_object()) {
+                            for (const char* key : {"url3", "url2", "url1"}) {
+                                std::string url =
+                                    thumbs.value(key, std::string());
+                                if (!url.empty()) {
+                                    file.thumb = url;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     if (!file.isDir) {
                         int64_t fsId =
                             (int64_t)numberUInt(item.value("fs_id", json(0)));
@@ -534,37 +571,7 @@ void BaiduDrive::requestDownloadUrl(
                           url = extractUrl(root["url"]);
                       if (url.empty())
                           return callback("", "", "baidu: empty download url");
-                      // Temporary diagnostics: replay the playback request so
-                      // the CDN rejection body shows up in the device log.
-                      {
-                          nxkit::HttpClient probe;
-                          probe.setTimeout(15000);
-                          probe.setHeaderBlock(playbackHeaders());
-                          probe.setHeader("Range", "bytes=0-0");
-                          probe.getAsync(
-                              url, {}, [](const nxkit::HttpResult& result) {
-                                  std::string body = result.body.substr(0, 240);
-                                  for (char& c : body)
-                                      if (c == '\n' || c == '\r') c = ' ';
-                                  FILE* file = fopen(
-#ifdef __SWITCH__
-                                      "sdmc:/switch/nxkit/qr_debug.log",
-#else
-                                      "/tmp/qr_debug.log",
-#endif
-                                      "a");
-                                  if (file) {
-                                      fprintf(file,
-                                              "baidu: probe status=%ld code=%d "
-                                              "err=%s body=%s\n",
-                                              result.status, result.code,
-                                              result.error.c_str(),
-                                              body.c_str());
-                                      fclose(file);
-                                  }
-                              });
-                      }
-                      callback(url, playbackHeaders(), "");
+                      callback(url, this->downloadHeaders(), "");
                   });
 }
 

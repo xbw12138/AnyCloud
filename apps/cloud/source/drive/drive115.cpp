@@ -540,21 +540,6 @@ void Drive115::requestDownloadUrl(
                 }
             }
             if (url.empty()) return callback("", "", "115: empty download url");
-            // Temporary diagnostics: replay the playback request so the CDN
-            // rejection body shows up in the device log.
-            {
-                nxkit::HttpClient probe;
-                probe.setTimeout(15000);
-                probe.setHeaderBlock(playbackHeaders());
-                probe.setHeader("Range", "bytes=0-0");
-                probe.getAsync(url, {}, [](const nxkit::HttpResult& result) {
-                    log115("115: probe status=" +
-                           std::to_string(result.status) +
-                           " code=" + std::to_string(result.code) +
-                           " err=" + result.error +
-                           " body=" + snippet(result, 240));
-                });
-            }
             callback(url, playbackHeaders(), "");
         });
 }

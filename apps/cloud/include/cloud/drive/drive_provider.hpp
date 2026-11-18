@@ -121,6 +121,10 @@ public:
     /// included.
     virtual std::string playbackHeaders() const { return std::string(); }
 
+    /// Headers for cover/thumbnail images. Defaults to the playback set;
+    /// drives whose thumbnails live on a different host override it.
+    virtual std::string thumbnailHeaders() const { return playbackHeaders(); }
+
     // --- File operations -----------------------------------------------------
     using SimpleCallback = std::function<void(const std::string& error)>;
     virtual void makeDir(const std::string& parentId, const std::string& name,
