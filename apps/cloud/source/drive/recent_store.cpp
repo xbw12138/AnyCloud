@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "cloud/drive/drive_manager.hpp"
 #include "nxkit/paths.hpp"
 
 namespace cloud {
@@ -31,13 +32,28 @@ std::vector<DriveFile> RecentStore::files() const {
     return this->entries;
 }
 
-void RecentStore::add(const DriveFile& file) {
-    if (file.isDir || file.id.empty() || file.name.empty()) return;
+void RecentStore::add(const DriveFile& input) {
+    if (input.isDir || input.id.empty() || input.name.empty()) return;
+
+    DriveFile file = input;
+    // Keep the drive the entry really came from: replaying an old entry while
+    // another drive is active must not relabel it.
+    if (file.providerId.empty()) {
+        if (auto provider = DriveManager::instance().findByNameOrId(
+                file.provider)) {
+            file.providerId = provider->id();
+            file.provider = provider->name();
+        } else if (auto current = DriveManager::instance().current()) {
+            file.providerId = current->id();
+            file.provider = current->name();
+        }
+    }
 
     std::lock_guard<std::mutex> lock(this->mutex);
 
     for (auto it = this->entries.begin(); it != this->entries.end(); ++it) {
-        if (it->id == file.id) {
+        if (it->id == file.id && it->providerId == file.providerId &&
+            it->provider == file.provider) {
             this->entries.erase(it);
             break;
         }
@@ -67,8 +83,19 @@ void RecentStore::load() {
         file.size = item.value("size", (uint64_t)0);
         file.updatedAt = item.value("modified", (int64_t)0);
         file.thumb = item.value("thumb", "");
+        file.parentId = item.value("parent", "");
+        file.providerId = item.value("provider_id", "");
+        file.provider = item.value("provider", "");
         file.isDir = false;
         if (file.id.empty() || file.name.empty()) continue;
+        // Records written before provider ids existed only stored the name.
+        if (file.providerId.empty() && !file.provider.empty()) {
+            if (auto provider =
+                    DriveManager::instance().findByNameOrId(file.provider)) {
+                file.providerId = provider->id();
+                file.provider = provider->name();
+            }
+        }
         this->entries.push_back(std::move(file));
     }
 }
@@ -82,7 +109,10 @@ void RecentStore::save() const {
                         {"name", file.name},
                         {"size", file.size},
                         {"modified", file.updatedAt},
-                        {"thumb", file.thumb}});
+                        {"thumb", file.thumb},
+                        {"provider_id", file.providerId},
+                        {"provider", file.provider},
+                        {"parent", file.parentId}});
     }
 
     std::ofstream output(nxkit::dataPath(kFileName), std::ios::trunc);

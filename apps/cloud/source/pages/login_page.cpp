@@ -5,10 +5,12 @@
 #include "cloud/pages/login_page.hpp"
 
 #include <borealis/core/task.hpp>
+#include <cpr/async.h>
 
 #include <cstdio>
 
 #include "cloud/drive/drive_manager.hpp"
+#include "nxkit/http_client.hpp"
 #include "nxkit/ui/qr_login_view.hpp"
 
 using namespace brls::literals;
@@ -78,10 +80,10 @@ void LoginPage::requestQr() {
     this->qrView->showLoading("cloud/login/requesting"_i18n);
 
     auto provider = DriveManager::instance().current();
-    provider->qrToken([this, alive = this->alive](const std::string& content,
-                                                  const std::string& token,
-                                                  const std::string& error) {
-        brls::sync([this, alive, content, token, error] {
+    provider->qrToken([this, alive = this->alive, provider](const std::string& content,
+                                                            const std::string& token,
+                                                            const std::string& error) {
+        brls::sync([this, alive, provider, content, token, error] {
             if (!*alive) return;
             if (!error.empty() || content.empty()) {
                 this->qrView->setStatus(error.empty() ? "cloud/login/failed"_i18n : error);
@@ -89,9 +91,31 @@ void LoginPage::requestQr() {
                 return;
             }
             this->qrTokenValue = token;
-            this->qrView->setQrContent(content);
-            this->qrView->setStatus("cloud/login/scan"_i18n);
+            if (provider->qrContentIsImage()) {
+                this->loadQrImage(content);
+            } else {
+                this->qrView->setQrContent(content);
+                this->qrView->setStatus("cloud/login/scan"_i18n);
+            }
             this->startPolling();
+        });
+    });
+}
+
+void LoginPage::loadQrImage(const std::string& url) {
+    cpr::async([this, alive = this->alive, url] {
+        nxkit::HttpClient client;
+        client.setTimeout(15000);
+        nxkit::HttpResult result = client.get(url);
+        brls::sync([this, alive, body = result.body, ok = result.ok] {
+            if (!*alive) return;
+            if (!ok || body.empty()) {
+                this->qrView->setStatus("cloud/login/failed"_i18n);
+                this->qrView->setRefreshVisible(true);
+                return;
+            }
+            this->qrView->setQrImage(body);
+            this->qrView->setStatus("cloud/login/scan"_i18n);
         });
     });
 }
@@ -118,6 +142,12 @@ void LoginPage::checkQr() {
         [this, alive = this->alive](QrStatus status, const std::string& error) {
             brls::sync([this, alive, status, error] {
                 if (!*alive) return;
+                {
+                    char line[160];
+                    snprintf(line, sizeof(line), "qr: poll status=%d err=%s",
+                             (int)status, error.c_str());
+                    logDebug(line);
+                }
                 // Transient network errors are retried on the next tick.
                 if (!error.empty()) return;
 

@@ -27,6 +27,9 @@ public:
     /// Renders `content` (usually a URL) as a QR code.
     void setQrContent(const std::string& content);
 
+    /// Shows a QR code image (PNG/JPEG bytes) instead of encoded text.
+    void setQrImage(const std::string& bytes);
+
     /// Sets the hint shown under the QR code.
     void setStatus(const std::string& status);
 

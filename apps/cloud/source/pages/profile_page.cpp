@@ -6,8 +6,14 @@
 
 #include <algorithm>
 
+#include <cpr/async.h>
+
 #include "cloud/drive/drive_manager.hpp"
+#include "cloud/main_activity.hpp"
+#include "cloud/pages/http_log_page.hpp"
+#include "cloud/pages/info_page.hpp"
 #include "cloud/pages/login_page.hpp"
+#include "nxkit/http_client.hpp"
 
 #ifndef NXKIT_APP_VERSION
 #define NXKIT_APP_VERSION "unknown"
@@ -82,6 +88,121 @@ public:
 
 private:
     float progress = 0;
+};
+
+/// Circular remote avatar. Draws nothing until the image bytes arrive, so the
+/// accent circle and initial behind it remain visible as a fallback.
+class AvatarView : public brls::View {
+public:
+    void setImageData(const std::string& bytes) {
+        this->bytes = bytes;
+        this->failed = false;
+        this->stale = true;
+        this->invalidate();
+    }
+
+    void clear() {
+        if (this->bytes.empty() && this->texture == 0) return;
+        this->bytes.clear();
+        this->stale = false;
+        this->failed = false;
+        this->texture = 0;
+        this->invalidate();
+    }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        if (width <= 0 || height <= 0 || this->bytes.empty()) return;
+
+        if (this->stale) {
+            this->stale = false;
+            this->texture =
+                nvgCreateImageMem(vg, 0,
+                                  reinterpret_cast<unsigned char*>(
+                                      &this->bytes[0]),
+                                  (int)this->bytes.size());
+            if (this->texture <= 0) {
+                this->failed = true;
+                return;
+            }
+            nvgImageSize(vg, this->texture, &this->imageWidth,
+                         &this->imageHeight);
+        }
+        if (this->failed || this->texture <= 0 || this->imageWidth <= 0 ||
+            this->imageHeight <= 0)
+            return;
+
+        float cx = x + width * 0.5f;
+        float cy = y + height * 0.5f;
+        float radius = std::min(width, height) * 0.5f;
+
+        // Aspect-fill the square image inside the circle.
+        float scale = std::max((radius * 2.0f) / this->imageWidth,
+                               (radius * 2.0f) / this->imageHeight);
+        float drawWidth = this->imageWidth * scale;
+        float drawHeight = this->imageHeight * scale;
+
+        nvgBeginPath(vg);
+        nvgCircle(vg, cx, cy, radius);
+        nvgFillPaint(vg, nvgImagePattern(vg, cx - drawWidth / 2.0f,
+                                        cy - drawHeight / 2.0f, drawWidth,
+                                        drawHeight, 0.0f, this->texture, 1.0f));
+        nvgFill(vg);
+    }
+
+private:
+    std::string bytes;
+    int texture = 0;
+    int imageWidth = 0;
+    int imageHeight = 0;
+    bool stale = false;
+    bool failed = false;
+};
+
+/// Two opposite arrows (a "swap" glyph) drawn with NanoVG: no icon font
+/// involved, so it always renders.
+class SwapArrowsView : public brls::View {
+public:
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        if (width <= 0 || height <= 0) return;
+
+        brls::Theme theme = brls::Application::getTheme();
+
+        const float midY = y + height * 0.5f;
+        const float gap = height * 0.22f;
+        const float inset = width * 0.10f;
+        const float left = x + inset;
+        const float right = x + width - inset;
+        const float head = 3.6f;
+
+        nvgStrokeColor(vg, this->a(theme["cloud/text_secondary"]));
+        nvgStrokeWidth(vg, 2.0f);
+        nvgLineCap(vg, NVG_ROUND);
+        nvgLineJoin(vg, NVG_ROUND);
+
+        // Top line with the arrow head on the right: →
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, left, midY - gap);
+        nvgLineTo(vg, right, midY - gap);
+        nvgStroke(vg);
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, right - head, midY - gap - head);
+        nvgLineTo(vg, right, midY - gap);
+        nvgLineTo(vg, right - head, midY - gap + head);
+        nvgStroke(vg);
+
+        // Bottom line with the arrow head on the left: ←
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, left, midY + gap);
+        nvgLineTo(vg, right, midY + gap);
+        nvgStroke(vg);
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, left + head, midY + gap - head);
+        nvgLineTo(vg, left, midY + gap);
+        nvgLineTo(vg, left + head, midY + gap + head);
+        nvgStroke(vg);
+    }
 };
 
 /// Flat action row: label on the left, chevron on the right.
@@ -165,42 +286,10 @@ ProfilePage::ProfilePage() {
 void ProfilePage::build() {
     brls::Theme theme = brls::Application::getTheme();
 
-    // --- Title + provider pill ----------------------------------------------
-    brls::Box* titleRow = new brls::Box(brls::Axis::ROW);
-    titleRow->setAlignItems(brls::AlignItems::CENTER);
-    titleRow->setHeight(44);
-
-    brls::Label* title = new brls::Label();
-    title->setText("cloud/tab/profile"_i18n);
-    title->setFontSize(32);
-    title->setTextColor(theme["cloud/text"]);
-    title->setHeight(40);
-    titleRow->addView(title);
-
-    brls::Box* spacer = new brls::Box();
-    spacer->setGrow(1);
-    spacer->setHeight(1);
-    titleRow->addView(spacer);
-
-    brls::Box* pill = new brls::Box(brls::Axis::ROW);
-    pill->setAlignItems(brls::AlignItems::CENTER);
-    pill->setHeight(34);
-    pill->setPadding(0, 16, 0, 16);
-    pill->setCornerRadius(17);
-    pill->setBackgroundColor(theme["cloud/surface_alt"]);
-
-    this->providerLabel = new brls::Label();
-    this->providerLabel->setFontSize(14);
-    this->providerLabel->setTextColor(theme["cloud/text_secondary"]);
-    this->providerLabel->setHeight(18);
-    pill->addView(this->providerLabel);
-    titleRow->addView(pill);
-
-    this->addView(titleRow);
-
     // --- Account card -------------------------------------------------------
+    // The active drive is shown by the badge in the tab bar, so the card can
+    // start right at the top of the page.
     brls::Box* card = new brls::Box(brls::Axis::COLUMN);
-    card->setMarginTop(18);
     card->setPadding(28, 30, 26, 30);
     card->setCornerRadius(24);
     card->setBackgroundColor(theme["cloud/surface"]);
@@ -222,6 +311,14 @@ void ProfilePage::build() {
     this->avatarLabel->setHeight(36);
     this->avatarLabel->setHorizontalAlign(brls::HorizontalAlign::CENTER);
     avatar->addView(this->avatarLabel);
+
+    // Remote avatar drawn on top of the accent circle / initial fallback.
+    this->avatarView = new AvatarView();
+    this->avatarView->setPositionType(brls::PositionType::ABSOLUTE);
+    this->avatarView->setPositionTop(0);
+    this->avatarView->setPositionLeft(0);
+    this->avatarView->setDimensions(76, 76);
+    avatar->addView(this->avatarView);
     headerRow->addView(avatar);
 
     brls::Box* nameColumn = new brls::Box(brls::Axis::COLUMN);
@@ -243,6 +340,33 @@ void ProfilePage::build() {
     nameColumn->addView(this->memberLabel);
 
     headerRow->addView(nameColumn);
+
+    // Drive switcher: icon in the top-right corner of the account card.
+    this->switchButton = new brls::Box(brls::Axis::ROW);
+    this->switchButton->setAlignItems(brls::AlignItems::CENTER);
+    this->switchButton->setJustifyContent(brls::JustifyContent::CENTER);
+    this->switchButton->setDimensions(40, 40);
+    this->switchButton->setMarginLeft(12);
+    this->switchButton->setCornerRadius(20);
+    this->switchButton->setHighlightCornerRadius(20);
+    this->switchButton->setBackgroundColor(theme["cloud/surface_alt"]);
+    this->switchButton->setFocusable(true);
+
+    SwapArrowsView* arrows = new SwapArrowsView();
+    arrows->setDimensions(22, 18);
+    this->switchButton->addView(arrows);
+
+    this->switchButton->registerAction(
+        "cloud/profile/switch"_i18n, brls::BUTTON_A, [this](brls::View*) {
+            this->openProviderMenu();
+            return true;
+        });
+    this->switchButton->registerClickAction([this](brls::View*) {
+        this->openProviderMenu();
+        return true;
+    });
+    headerRow->addView(this->switchButton);
+
     card->addView(headerRow);
 
     // Storage usage block, hidden while signed out or before capacity loads.
@@ -282,6 +406,7 @@ void ProfilePage::build() {
 
     this->refreshTile =
         new ActionTile("cloud/profile/refresh"_i18n, [this] { this->refreshAccount(); });
+    this->refreshTile->setWidth(0);
     this->refreshTile->setGrow(1);
     actions->addView(this->refreshTile);
 
@@ -297,24 +422,81 @@ void ProfilePage::build() {
             else
                 this->openLogin();
         });
+    this->accountTile->setWidth(0);
     this->accountTile->setGrow(1);
     actions->addView(this->accountTile);
 
-    this->providerTile =
-        new ActionTile("cloud/profile/switch"_i18n, [this] { this->openProviderMenu(); });
-    this->providerTile->setGrow(1);
-    this->providerTile->setVisibility(brls::Visibility::GONE);
-    actions->addView(this->providerTile);
-
     this->addView(actions);
 
+    // --- Diagnostics --------------------------------------------------------
+    // Request log and the home-menu shortcut share one row.
+    brls::Box* tools = new brls::Box(brls::Axis::ROW);
+    tools->setMarginTop(16);
+
+    ActionTile* logTile = new ActionTile("cloud/log/title"_i18n, [] {
+        brls::Application::pushActivity(new HttpLogPage());
+    });
+    logTile->setWidth(0);
+    logTile->setGrow(1);
+    tools->addView(logTile);
+
 #ifdef BUILTIN_NSP
+    brls::Box* toolsGap = new brls::Box();
+    toolsGap->setWidth(16);
+    toolsGap->setHeight(1);
+    tools->addView(toolsGap);
+
     // Install the NSP forwarder so the user can add a home-menu icon.
     this->desktopTile = new ActionTile("cloud/profile/desktop"_i18n,
                                        [this] { this->installDesktopIcon(); });
-    this->desktopTile->setMarginTop(16);
-    this->addView(this->desktopTile);
+    this->desktopTile->setWidth(0);
+    this->desktopTile->setGrow(1);
+    tools->addView(this->desktopTile);
 #endif
+
+    this->addView(tools);
+
+    // --- Info row -----------------------------------------------------------
+    brls::Box* info = new brls::Box(brls::Axis::ROW);
+    info->setMarginTop(16);
+
+    ActionTile* featuresTile =
+        new ActionTile("cloud/profile/features"_i18n, [] {
+            brls::Application::pushActivity(
+                new InfoPage(InfoPage::Section::Features));
+        });
+    featuresTile->setWidth(0);
+    featuresTile->setGrow(1);
+    info->addView(featuresTile);
+
+    brls::Box* infoGap = new brls::Box();
+    infoGap->setWidth(16);
+    infoGap->setHeight(1);
+    info->addView(infoGap);
+
+    ActionTile* controlsTile =
+        new ActionTile("cloud/profile/controls"_i18n, [] {
+            brls::Application::pushActivity(
+                new InfoPage(InfoPage::Section::Controls));
+        });
+    controlsTile->setWidth(0);
+    controlsTile->setGrow(1);
+    info->addView(controlsTile);
+
+    brls::Box* infoGap2 = new brls::Box();
+    infoGap2->setWidth(16);
+    infoGap2->setHeight(1);
+    info->addView(infoGap2);
+
+    ActionTile* aboutTile = new ActionTile("cloud/profile/about"_i18n, [] {
+        brls::Application::pushActivity(
+            new InfoPage(InfoPage::Section::About));
+    });
+    aboutTile->setWidth(0);
+    aboutTile->setGrow(1);
+    info->addView(aboutTile);
+
+    this->addView(info);
 
     // --- Footer -------------------------------------------------------------
     brls::Box* footerSpacer = new brls::Box();
@@ -347,13 +529,22 @@ void ProfilePage::refreshAccount() {
     // Ignore taps while a request is already in flight.
     if (this->refreshing) return;
     this->refreshing = true;
+    const uint64_t request = ++this->accountRequest;
     this->refreshTile->setTitle("cloud/profile/refreshing"_i18n);
 
+    // A provider whose request never completes must not leave the card stuck on
+    // "refreshing" forever: a stalled request has no reply to reset it.
+    brls::delay(25000, [this, alive = this->alive, request] {
+        if (!*alive || this->accountRequest != request) return;
+        this->refreshing = false;
+        this->refreshTile->setTitle("cloud/profile/refresh"_i18n);
+    });
+
     provider->accountInfo(
-        [this, alive = this->alive](const AccountInfo& info,
-                                    const std::string& error) {
-            brls::sync([this, alive, info, error] {
-                if (!*alive) return;
+        [this, alive = this->alive, request](const AccountInfo& info,
+                                             const std::string& error) {
+            brls::sync([this, alive, request, info, error] {
+                if (!*alive || this->accountRequest != request) return;
                 this->refreshing = false;
                 this->refreshTile->setTitle("cloud/profile/refresh"_i18n);
                 if (error.empty())
@@ -372,14 +563,14 @@ void ProfilePage::applyAccount() {
 
     brls::Theme theme = brls::Application::getTheme();
 
-    this->providerLabel->setText(provider->name());
-
     bool multipleProviders = manager.providers().size() > 1;
-    this->providerTile->setVisibility(multipleProviders ? brls::Visibility::VISIBLE
-                                                        : brls::Visibility::GONE);
+    this->switchButton->setVisibility(multipleProviders
+                                          ? brls::Visibility::VISIBLE
+                                          : brls::Visibility::GONE);
 
     if (!this->loggedIn) {
         this->avatarLabel->setText("?");
+        this->loadAvatar(std::string());
         this->nicknameLabel->setText("cloud/profile/guest"_i18n);
         this->nicknameLabel->setTextColor(theme["cloud/text_secondary"]);
         this->memberLabel->setVisibility(brls::Visibility::GONE);
@@ -393,6 +584,7 @@ void ProfilePage::applyAccount() {
                                ? "cloud/profile/unknown"_i18n
                                : this->account.nickname;
     this->avatarLabel->setText(firstCharacter(nickname));
+    this->loadAvatar(this->account.avatarUrl);
     this->nicknameLabel->setText(nickname);
     this->nicknameLabel->setTextColor(theme["cloud/text"]);
 
@@ -416,6 +608,27 @@ void ProfilePage::applyAccount() {
 
     this->refreshTile->setVisibility(brls::Visibility::VISIBLE);
     this->accountTile->setTitle("cloud/profile/logout"_i18n);
+}
+
+void ProfilePage::loadAvatar(const std::string& rawUrl) {
+    std::string url = rawUrl;
+    if (url.rfind("//", 0) == 0) url = "https:" + url;
+    if (url == this->avatarUrl) return;
+    this->avatarUrl = url;
+    if (this->avatarView) this->avatarView->clear();
+    if (url.empty()) return;
+
+    cpr::async([this, alive = this->alive, url] {
+        nxkit::HttpClient client;
+        client.setTimeout(15000);
+        nxkit::HttpResult result = client.get(url);
+        brls::sync([this, alive, url, ok = result.ok,
+                    body = result.body] {
+            if (!*alive || url != this->avatarUrl) return;
+            if (!ok || body.empty() || !this->avatarView) return;
+            this->avatarView->setImageData(body);
+        });
+    });
 }
 
 void ProfilePage::openLogin() {
@@ -442,7 +655,7 @@ void ProfilePage::logout() {
     dialog->open();
 }
 
-void ProfilePage::openProviderMenu() {
+void showProviderPicker(std::function<void()> onChanged) {
     auto& manager = DriveManager::instance();
     if (manager.providers().size() <= 1) return;
 
@@ -457,15 +670,29 @@ void ProfilePage::openProviderMenu() {
 
     brls::Dropdown* dropdown = new brls::Dropdown(
         "cloud/profile/provider"_i18n, names,
-        [this](int choice) {
+        [onChanged](int choice) {
             auto& mgr = DriveManager::instance();
             if (choice < 0 || choice >= (int)mgr.providers().size()) return;
             mgr.setCurrent(mgr.providers()[choice]->id());
-            this->account = AccountInfo();
-            this->refreshAccount();
+            refreshProviderBadge();
+            if (onChanged) onChanged();
         },
         selected);
     brls::Application::pushActivity(new brls::Activity(dropdown));
+}
+
+void ProfilePage::openProviderMenu() {
+    showProviderPicker([this, alive = this->alive] {
+        if (!*alive) return;
+        this->account = AccountInfo();
+        this->refreshAccount();
+    });
+}
+
+void ProfilePage::reload() {
+    this->account = AccountInfo();
+    this->refreshing = false;
+    this->refreshAccount();
 }
 
 void ProfilePage::installDesktopIcon() {

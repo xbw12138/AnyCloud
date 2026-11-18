@@ -5,11 +5,20 @@
 #include "cloud/pages/player_page.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <fstream>
+
+#include <borealis/core/thread.hpp>
 
 #include "cloud/drive/playback_store.hpp"
 #include "cloud/drive/recent_store.hpp"
+#include "cloud/util/text_encoding.hpp"
+#include "cpr/async.h"
+#include "nxkit/http_client.hpp"
+#include "nxkit/paths.hpp"
 #include "nxkit/utils/number_helper.hpp"
 
 #ifdef NXKIT_WITH_MPV
@@ -32,6 +41,71 @@ void logDebug(const std::string& line) {
     if (!file) return;
     fprintf(file, "%s\n", line.c_str());
     fclose(file);
+}
+
+std::string speedText(double speed) {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%gx", speed);
+    return buf;
+}
+
+std::string extensionOf(const std::string& name) {
+    size_t dot = name.find_last_of('.');
+    if (dot == std::string::npos) return "";
+    std::string ext = name.substr(dot + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    return ext;
+}
+
+bool isSubtitleName(const std::string& name) {
+    std::string ext = extensionOf(name);
+    return ext == "srt" || ext == "ass" || ext == "ssa" || ext == "vtt";
+}
+
+/// Name without the extension, lowercased: "Movie.CHS.srt" -> "movie.chs".
+std::string stemOf(const std::string& name) {
+    size_t slash = name.find_last_of("/\\");
+    std::string base =
+        slash == std::string::npos ? name : name.substr(slash + 1);
+    size_t dot = base.find_last_of('.');
+    if (dot != std::string::npos) base = base.substr(0, dot);
+    std::transform(base.begin(), base.end(), base.begin(), ::tolower);
+    return base;
+}
+
+/// "Movie" matches "Movie.srt", "Movie.chs.srt" and "Movie-简中.ass", but not
+/// "Movie2.srt".
+bool subtitleMatchesVideo(const std::string& videoStem,
+                          const std::string& subName) {
+    std::string stem = stemOf(subName);
+    if (stem == videoStem) return true;
+    if (stem.size() <= videoStem.size()) return false;
+    if (stem.compare(0, videoStem.size(), videoStem) != 0) return false;
+    char next = stem[videoStem.size()];
+    return next == '.' || next == ' ' || next == '-' || next == '_';
+}
+
+struct AspectOption {
+    /// i18n key, or a literal ratio for the fixed entries.
+    const char* label;
+    /// mpv `video-aspect-override` value; nullptr means "stretch to fill".
+    const char* value;
+};
+
+const AspectOption kAspects[] = {
+    {"cloud/player/aspect_default", "no"},
+    {"16:9", "16:9"},
+    {"4:3", "4:3"},
+    {"1:1", "1:1"},
+    {"21:9", "21:9"},
+    {"cloud/player/aspect_stretch", nullptr},
+};
+const int kAspectCount = (int)(sizeof(kAspects) / sizeof(kAspects[0]));
+
+std::string aspectLabel(const AspectOption& option) {
+    if (strncmp(option.label, "cloud/", 6) == 0)
+        return brls::getStr(option.label);
+    return option.label;
 }
 
 }  // namespace
@@ -85,6 +159,52 @@ void SeekBarView::draw(NVGcontext* vg, float x, float y, float width,
     nvgCircle(vg, x + filled, centerY, 7.0f);
     nvgFillColor(vg, nvgRGBA(255, 255, 255, 255));
     nvgFill(vg);
+}
+
+/// Extracts one header from a CRLF separated provider header block.
+static std::string headerValue(const std::string& headers,
+                               const std::string& name) {
+    size_t start = 0;
+    while (start <= headers.size()) {
+        size_t end = headers.find('\n', start);
+        std::string line = headers.substr(
+            start, end == std::string::npos ? std::string::npos : end - start);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.size() > name.size() &&
+            line.compare(0, name.size(), name) == 0 &&
+            line[name.size()] == ':') {
+            size_t value = line.find_first_not_of(" \t", name.size() + 1);
+            return value == std::string::npos ? "" : line.substr(value);
+        }
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return "";
+}
+
+/// Same block without the given header (mpv gets the user agent through its
+/// own property, see startUrl).
+static std::string headersWithout(const std::string& headers,
+                                  const std::string& name) {
+    std::string out;
+    size_t start = 0;
+    while (start <= headers.size()) {
+        size_t end = headers.find('\n', start);
+        std::string line = headers.substr(
+            start, end == std::string::npos ? std::string::npos : end - start);
+        std::string trimmed = line;
+        if (!trimmed.empty() && trimmed.back() == '\r') trimmed.pop_back();
+        bool drop = trimmed.size() > name.size() &&
+                    trimmed.compare(0, name.size(), name) == 0 &&
+                    trimmed[name.size()] == ':';
+        if (!drop) {
+            if (!out.empty()) out += "\r\n";
+            out += trimmed;
+        }
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return out;
 }
 
 /// mpv wants extra headers as a single comma separated list, providers return
@@ -212,6 +332,7 @@ PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
         this->hintLabel->setText("cloud/player/hint_video"_i18n);
         this->osdPanel->addView(this->hintLabel);
 
+        this->osdPanel->setVisibility(brls::Visibility::GONE);
         this->addView(this->osdPanel);
     }
 
@@ -322,7 +443,34 @@ PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
                 this->showQualityMenu();
                 return true;
             });
+        // "-" (BUTTON_BACK) opens the subtitle list; it is the only free
+        // button next to the ones already used by the player.
+        this->registerAction(
+            "cloud/player/subtitle"_i18n, brls::BUTTON_BACK,
+            [this](brls::View*) -> bool {
+                this->showOsd();
+                this->showSubtitleMenu();
+                return true;
+            });
+        // R3 switches the displayed aspect ratio (4:3 material on a 16:9
+        // screen, anamorphic sources, stretched full-screen fills, ...).
+        this->registerAction(
+            "cloud/player/aspect"_i18n, brls::BUTTON_RSB,
+            [this](brls::View*) -> bool {
+                this->showOsd();
+                this->showAspectMenu();
+                return true;
+            });
     }
+
+    // L3 (left stick click) opens the playback speed menu; works for audio too.
+    this->registerAction(
+        "cloud/player/speed"_i18n, brls::BUTTON_LSB,
+        [this](brls::View*) -> bool {
+            this->showOsd();
+            this->showSpeedMenu();
+            return true;
+        });
 
     this->eventSub = nxkit::MPVCore::instance().getEvent()->subscribe(
         [this, alive = this->alive](nxkit::MpvEventEnum event) {
@@ -362,6 +510,9 @@ void PlayerPage::play() {
         this->playOriginal();
         return;
     }
+    // Subtitles live next to the video, fetch the list while the stream is
+    // negotiated so both requests run in parallel.
+    this->requestSubtitles();
     // Prefer transcoded streams (no special headers required).
     logDebug("player: requesting streams");
     // Switching entries clears the stream list while the previous request may
@@ -425,6 +576,12 @@ bool PlayerPage::playAt(size_t index) {
 
     this->playlistIndex = index;
     this->file = this->playlist[index];
+    // Stamp the drive the file is played from; the player may have been started
+    // for a drive that is not the currently active one (recent views).
+    if (this->file.providerId.empty() && this->provider) {
+        this->file.providerId = this->provider->id();
+        this->file.provider = this->provider->name();
+    }
     RecentStore::instance().add(this->file);
     logDebug("player: play index " + std::to_string(index) + " '" +
              this->file.name + "'");
@@ -438,6 +595,11 @@ bool PlayerPage::playAt(size_t index) {
     this->lastHeaders.clear();
     this->triedSoftwareDec = false;
     this->statusOverride = false;
+    // Subtitles belong to the video that was playing, not to the new one.
+    this->subtitles.clear();
+    this->subtitleIndex = -1;
+    this->activeSubtitlePath.clear();
+    this->pendingSubtitlePath.clear();
 
     if (this->titleLabel) this->titleLabel->setText(this->file.name);
     if (this->osdName) this->osdName->setText(this->file.name);
@@ -447,7 +609,9 @@ bool PlayerPage::playAt(size_t index) {
     if (this->durationLabel) this->durationLabel->setText("--:--");
     if (this->metaLabel) this->metaLabel->setText("");
     this->setStatus("cloud/player/loading"_i18n);
-    this->showOsd(false);
+    // Keep the bottom panel hidden until the viewer asks for it: showing it
+    // here made it flash on every entry.
+    if (this->osdPanel) this->osdPanel->setVisibility(brls::Visibility::GONE);
 
     this->play();
     return true;
@@ -551,8 +715,17 @@ void PlayerPage::startUrl(const std::string& url, const std::string& headers) {
     // into the next (header-less) stream. Restore hwdec as well, a previous
     // file may have fallen back to software decoding.
     mpv.command_async("set", "hwdec", "auto");
-    mpv.setHttpHeaders(headers.empty() ? "" : headersToMpv(headers));
+    // ffmpeg would send mpv's own (Lavf/mpv) User-Agent instead of the one the
+    // provider signed the link with, which makes some CDNs answer 403.
+    std::string userAgent = headerValue(headers, "User-Agent");
+    std::string extraHeaders = headersWithout(headers, "User-Agent");
+    if (!userAgent.empty()) mpv.command_async("set", "user-agent", userAgent);
+    mpv.setHttpHeaders(extraHeaders.empty() ? "" : headersToMpv(extraHeaders));
     mpv.setUrl(url);
+    // A reload (quality change, software decoding fallback) drops the subtitle
+    // track too; queue the local copy so it comes back with the video.
+    if (!this->activeSubtitlePath.empty())
+        this->pendingSubtitlePath = this->activeSubtitlePath;
 #else
     (void)url;
     (void)headers;
@@ -586,9 +759,21 @@ void PlayerPage::onMpvEvent(int event) {
             break;
         case MpvEventEnum::MPV_LOADED: {
             this->setStatus("");
+            auto& mpv = nxkit::MPVCore::instance();
+            // reset() clears mpv properties between files: restore the speed
+            // the user picked with the L3 menu.
+            if (this->playbackSpeed != 1.0) mpv.setSpeed(this->playbackSpeed);
+            // Aspect override is also lost on reset(); restore the user's pick.
+            if (this->aspectIndex != 0) this->applyAspect(this->aspectIndex, false);
+            // Attach the subtitle that was picked before the file was ready.
+            if (!this->pendingSubtitlePath.empty()) {
+                std::string path = this->pendingSubtitlePath;
+                this->pendingSubtitlePath.clear();
+                mpv.command_async("sub-add", path, "select");
+                mpv.command_async("set", "sub-visibility", "yes");
+            }
             // The stream is seekable now: jump to the remembered position.
             if (this->resumePosition > 0) {
-                auto& mpv = nxkit::MPVCore::instance();
                 int64_t target = (int64_t)this->resumePosition;
                 this->resumePosition = 0;
                 logDebug("player: resume at " + std::to_string(target));
@@ -598,7 +783,6 @@ void PlayerPage::onMpvEvent(int event) {
             }
             // Show the OSD once, then let it fade out during playback.
             this->updateOsd();
-            this->showOsd(true);
             break;
         }
         case MpvEventEnum::MPV_FILE_ERROR:
@@ -652,6 +836,8 @@ void PlayerPage::updateOsd() {
                            " / " + wiliwili::sec2Time(mpv.duration);
         if (this->loopMode != LoopMode::Off)
             text += "  |  " + this->loopLabel();
+        if (this->playbackSpeed != 1.0)
+            text += "  |  " + speedText(this->playbackSpeed);
         if (mpv.isPaused()) text += "  |  " + "cloud/player/paused"_i18n;
         this->osdProgress->setText(text);
         return;
@@ -683,6 +869,10 @@ void PlayerPage::updateOsd() {
     if (this->loopMode != LoopMode::Off) {
         if (!meta.empty()) meta += "  ·  ";
         meta += this->loopLabel();
+    }
+    if (this->playbackSpeed != 1.0) {
+        if (!meta.empty()) meta += "  ·  ";
+        meta += speedText(this->playbackSpeed);
     }
     if (mpv.isPaused()) {
         if (!meta.empty()) meta += "  ·  ";
@@ -742,6 +932,19 @@ void PlayerPage::showOsd(bool autoHide) {
     });
 }
 
+void PlayerPage::showPlayerMessage(const std::string& text) {
+    if (!this->hintLabel) return;
+    const std::string hint = this->isAudio ? "cloud/player/hint_audio"_i18n
+                                           : "cloud/player/hint_video"_i18n;
+    this->hintLabel->setText(text);
+    this->showOsd();
+    const int token = ++this->messageToken;
+    brls::delay(3000, [this, alive = this->alive, hint, token] {
+        if (!*alive || token != this->messageToken) return;
+        if (this->hintLabel) this->hintLabel->setText(hint);
+    });
+}
+
 void PlayerPage::showQualityMenu() {
 #ifdef NXKIT_WITH_MPV
     logDebug("player: Y pressed, streams=" + std::to_string(this->streams.size()));
@@ -783,10 +986,15 @@ void PlayerPage::showQualityMenu() {
 void PlayerPage::presentQualityMenu() {
 #ifdef NXKIT_WITH_MPV
     std::vector<std::string> names;
-    for (const auto& s : this->streams)
-        names.push_back(s.resolution + "  " +
-                        std::to_string(s.width) + "x" +
-                        std::to_string(s.height));
+    for (const auto& s : this->streams) {
+        // Transcoded playlists only carry a quality name, original files
+        // carry a resolution too.
+        if (s.width > 0 && s.height > 0)
+            names.push_back(s.resolution + "  " + std::to_string(s.width) +
+                            "x" + std::to_string(s.height));
+        else
+            names.push_back(s.resolution);
+    }
     // A Dropdown is a full screen view, it only becomes visible once pushed as
     // an activity (see the borealis demo).
     brls::Dropdown* dropdown = new brls::Dropdown(
@@ -801,6 +1009,282 @@ void PlayerPage::presentQualityMenu() {
         },
         this->streamIndex);
     brls::Application::pushActivity(new brls::Activity(dropdown));
+#endif
+}
+
+void PlayerPage::showSpeedMenu() {
+#ifdef NXKIT_WITH_MPV
+    static const double kSpeeds[] = {0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0};
+    const int count = (int)(sizeof(kSpeeds) / sizeof(kSpeeds[0]));
+
+    std::vector<std::string> items;
+    int current = 2;
+    for (int i = 0; i < count; i++) {
+        items.push_back(speedText(kSpeeds[i]));
+        if (std::fabs(kSpeeds[i] - this->playbackSpeed) < 1e-6) current = i;
+    }
+
+    brls::Dropdown* dropdown = new brls::Dropdown(
+        "cloud/player/speed"_i18n, items,
+        [this](int selected) {
+            if (selected < 0 || selected >= count) return;
+            this->applySpeed(kSpeeds[selected]);
+        },
+        current);
+    brls::Application::pushActivity(new brls::Activity(dropdown));
+#endif
+}
+
+void PlayerPage::applySpeed(double speed) {
+#ifdef NXKIT_WITH_MPV
+    this->playbackSpeed = speed;
+    nxkit::MPVCore::instance().setSpeed(speed);
+#endif
+    this->showOsd();
+    this->showPlayerMessage(brls::getStr("cloud/player/speed_on", speedText(speed)));
+    this->updateOsd();
+}
+
+void PlayerPage::showAspectMenu() {
+#ifdef NXKIT_WITH_MPV
+    std::vector<std::string> items;
+    for (int i = 0; i < kAspectCount; i++)
+        items.push_back(aspectLabel(kAspects[i]));
+
+    brls::Dropdown* dropdown = new brls::Dropdown(
+        "cloud/player/aspect"_i18n, items,
+        [this, alive = this->alive](int selected) {
+            if (!*alive) return;
+            this->applyAspect(selected, true);
+        },
+        this->aspectIndex);
+    brls::Application::pushActivity(new brls::Activity(dropdown));
+#endif
+}
+
+void PlayerPage::applyAspect(int index, bool notify) {
+    if (index < 0 || index >= kAspectCount) return;
+    this->aspectIndex = index;
+#ifdef NXKIT_WITH_MPV
+    auto& mpv = nxkit::MPVCore::instance();
+    const AspectOption& option = kAspects[index];
+    if (option.value) {
+        mpv.command_async("set", "keepaspect", "yes");
+        mpv.command_async("set", "video-aspect-override", option.value);
+    } else {
+        // "Stretch": ignore the source ratio and fill the screen.
+        mpv.command_async("set", "keepaspect", "no");
+        mpv.command_async("set", "video-aspect-override", "no");
+    }
+#endif
+    if (!notify) return;
+    this->showOsd();
+    this->showPlayerMessage(aspectLabel(kAspects[index]));
+    this->updateOsd();
+}
+
+void PlayerPage::requestSubtitles() {
+    this->subtitles.clear();
+    this->subtitleIndex = -1;
+    this->activeSubtitlePath.clear();
+    this->subtitleScanId = this->file.id;
+    this->subtitleScanStem = stemOf(this->file.name);
+    this->subtitleScanPage = 0;
+    if (!this->provider || this->file.parentId.empty()) {
+        logDebug("player: subtitle scan skipped (no parent dir)");
+        return;
+    }
+    this->fetchSubtitlePage();
+}
+
+void PlayerPage::fetchSubtitlePage() {
+    const std::string fileId = this->subtitleScanId;
+    const std::string parentId = this->file.parentId;
+    const std::string stem = this->subtitleScanStem;
+    const int page = ++this->subtitleScanPage;
+    logDebug("player: subtitle scan dir=" + parentId + " page=" +
+             std::to_string(page));
+    this->provider->listFiles(
+        parentId, page, 100,
+        [this, alive = this->alive, fileId, stem, page](
+            const std::vector<DriveFile>& files, int total,
+            const std::string& error) {
+            brls::sync([this, alive, fileId, stem, page, files, total, error] {
+                if (!*alive) return;
+                if (this->subtitleScanId != fileId) return;
+                if (!error.empty()) {
+                    logDebug("player: subtitle scan err=" + error);
+                    return;
+                }
+
+                int matched = -2;  // -2: nothing yet
+                for (const auto& file : files) {
+                    if (file.isDir || !isSubtitleName(file.name)) continue;
+                    this->subtitles.push_back(file);
+                    if (matched == -2 && subtitleMatchesVideo(stem, file.name))
+                        matched = (int)this->subtitles.size() - 1;
+                }
+
+                // Big folders paginate; two extra pages cover a whole season
+                // of episodes with their subtitle files.
+                bool more =
+                    !files.empty() && page < 3 &&
+                    (total < 0 ? files.size() >= 100 : page * 100 < total);
+                if (more) {
+                    this->fetchSubtitlePage();
+                    return;
+                }
+
+                logDebug("player: subtitles n=" +
+                         std::to_string(this->subtitles.size()));
+                if (this->subtitles.empty()) return;
+                // Auto-load the same-name subtitle, or the only one around.
+                if (matched == -2 && this->subtitles.size() == 1) matched = 0;
+                if (matched >= 0) this->selectSubtitle(matched);
+            });
+        });
+}
+
+void PlayerPage::showSubtitleMenu() {
+#ifdef NXKIT_WITH_MPV
+    if (this->subtitles.empty()) {
+        this->showPlayerMessage("cloud/player/subtitle_none"_i18n);
+        return;
+    }
+    std::vector<std::string> names;
+    names.push_back("cloud/player/subtitle_off"_i18n);
+    for (const auto& sub : this->subtitles) names.push_back(sub.name);
+
+    brls::Dropdown* dropdown = new brls::Dropdown(
+        "cloud/player/subtitle"_i18n, names,
+        [this](int selected) {
+            if (selected < 0) return;
+            this->selectSubtitle(selected - 1);
+        },
+        this->subtitleIndex + 1);
+    brls::Application::pushActivity(new brls::Activity(dropdown));
+#endif
+}
+
+void PlayerPage::selectSubtitle(int index) {
+#ifdef NXKIT_WITH_MPV
+    auto& mpv = nxkit::MPVCore::instance();
+    if (index < 0 || index >= (int)this->subtitles.size()) {
+        this->subtitleIndex = -1;
+        this->activeSubtitlePath.clear();
+        this->pendingSubtitlePath.clear();
+        mpv.command_async("set", "sub-visibility", "no");
+        return;
+    }
+    if (!this->provider) return;
+
+    const DriveFile sub = this->subtitles[index];
+    const std::string fileId = this->file.id;
+    logDebug("player: subtitle load '" + sub.name + "'");
+    this->provider->downloadInfo(
+        sub.id,
+        [this, alive = this->alive, fileId, sub, index](
+            const std::string& url, const std::string& headers,
+            const std::string& error) {
+            brls::sync([this, alive, fileId, sub, index, url, headers, error] {
+                if (!*alive) return;
+                if (this->file.id != fileId) return;
+                if (!error.empty() || url.empty()) {
+                    logDebug("player: subtitle url err=" + error);
+                    this->showPlayerMessage(
+                        "cloud/player/subtitle_failed"_i18n);
+                    return;
+                }
+                const std::string ext = extensionOf(sub.name);
+                // Download and re-encode off the main thread, mpv only eats
+                // UTF-8 subtitles and Chinese releases are often GBK.
+                cpr::async([this, alive, fileId, sub, index, url, headers,
+                            ext] {
+                    std::string body;
+                    std::string reason;
+                    try {
+                        nxkit::HttpClient client;
+                        client.setHeaderBlock(headers);
+                        client.setTimeout(30000);
+                        nxkit::HttpResult result = client.get(url);
+                        if (result.ok) {
+                            body = std::move(result.body);
+                        } else {
+                            reason = "http " + std::to_string(result.status);
+                            if (!result.error.empty())
+                                reason += " " + result.error;
+                        }
+                    } catch (const std::exception& e) {
+                        reason = std::string("net ") + e.what();
+                    }
+                    logDebug("player: subtitle dl bytes=" +
+                             std::to_string(body.size()) + " reason=" + reason);
+
+                    std::string path;
+                    if (!body.empty()) {
+                        body = subtitleToUtf8(body);
+                        nxkit::ensureDirectory(nxkit::dataPath("subtitles/"));
+                        path = nxkit::dataPath("subtitles/" + sub.id + "." +
+                                               (ext.empty() ? "srt" : ext));
+                        std::ofstream out(path, std::ios::binary |
+                                                    std::ios::trunc);
+                        if (out) {
+                            out.write(body.data(), (std::streamsize)body.size());
+                            if (!out.good()) path.clear();
+                        } else {
+                            path.clear();
+                        }
+                        if (path.empty()) reason = "write";
+                    } else if (reason.empty()) {
+                        reason = "empty body";
+                    }
+
+                    brls::sync([this, alive, fileId, sub, index, path,
+                                reason] {
+                        if (!*alive) return;
+                        if (this->file.id != fileId) return;
+                        if (path.empty()) {
+                            logDebug("player: subtitle save failed: " + reason);
+                            this->showPlayerMessage(
+                                "cloud/player/subtitle_failed"_i18n);
+                            return;
+                        }
+                        auto& mpv = nxkit::MPVCore::instance();
+                        this->subtitleIndex = index;
+                        this->activeSubtitlePath = path;
+                        if (mpv.isStopped()) {
+                            this->pendingSubtitlePath = path;
+                            this->showPlayerMessage(
+                                "cloud/player/subtitle_loaded"_i18n + " " +
+                                sub.name);
+                            return;
+                        }
+                        const int64_t before = mpv.getInt("track-list/count");
+                        mpv.command_async("sub-add", path, "select");
+                        mpv.command_async("set", "sub-visibility", "yes");
+                        this->showOsd();
+                        // mpv adds tracks asynchronously: check that the file
+                        // really landed instead of failing silently.
+                        brls::delay(1500, [this, alive, fileId, before, sub] {
+                            if (!*alive) return;
+                            if (this->file.id != fileId) return;
+                            auto& mpv = nxkit::MPVCore::instance();
+                            int64_t tracks = mpv.getInt("track-list/count");
+                            logDebug("player: subtitle tracks=" +
+                                     std::to_string(tracks) + " before=" +
+                                     std::to_string(before));
+                            if (tracks > before)
+                                this->showPlayerMessage(
+                                    "cloud/player/subtitle_loaded"_i18n + " " +
+                                    sub.name);
+                            else
+                                this->showPlayerMessage(
+                                    "cloud/player/subtitle_failed"_i18n);
+                        });
+                    });
+                });
+            });
+        });
 #endif
 }
 

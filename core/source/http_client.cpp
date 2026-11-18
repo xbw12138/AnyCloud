@@ -2,9 +2,64 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <ctime>
 #include <map>
 
+#include "nxkit/http_log.hpp"
+
 namespace nxkit {
+
+namespace {
+
+int64_t nowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+/// Readable request line for the in-app log; query values are kept verbatim
+/// because most of them (file ids, sizes) are the interesting part.
+std::string displayUrl(const std::string& url, const Query& query) {
+    if (query.empty()) return url;
+    std::string out = url;
+    out += out.find('?') == std::string::npos ? '?' : '&';
+    bool first = true;
+    for (const auto& pair : query) {
+        if (!first) out += '&';
+        first = false;
+        out += pair.first + "=" + pair.second;
+    }
+    return out;
+}
+
+void logRequest(const char* method, const std::string& url, int64_t startedMs,
+                const HttpResult& result) {
+    HttpLogEntry entry;
+    entry.time = (int64_t)time(nullptr);
+    entry.method = method;
+    entry.url = url;
+    entry.status = result.status;
+    entry.code = result.code;
+    entry.durationMs = (int)(nowMs() - startedMs);
+    entry.bytes = result.body.size();
+    entry.ok = result.ok;
+    entry.error = result.error;
+
+    auto contentType = result.headers.find("content-type");
+    if (contentType != result.headers.end()) entry.note = contentType->second;
+    const std::string& type = entry.note;
+    const bool text = type.find("json") != std::string::npos ||
+                      type.find("text") != std::string::npos ||
+                      type.find("xml") != std::string::npos;
+    // Text bodies explain failures ("auth expired", error codes); image bytes
+    // would only pollute the log. Keep the whole body: the detail page renders
+    // it in full, and HttpLog caps the total memory it retains.
+    if (text && !result.body.empty()) entry.snippet = result.body;
+    HttpLog::instance().add(std::move(entry));
+}
+
+}  // namespace
 
 namespace {
 
@@ -124,6 +179,33 @@ void HttpClient::removeHeader(const std::string& name) { extraHeaders.erase(name
 
 void HttpClient::clearHeaders() { extraHeaders.clear(); }
 
+void HttpClient::setHeaderBlock(const std::string& block) {
+    // "Cookie: a=b\r\nReferer: ..." (most providers) or
+    // "Cookie: a=b,Referer: ..." (mpv's http-header-fields, Quark).
+    const bool perLine = block.find('\n') != std::string::npos;
+    size_t pos = 0;
+    while (pos < block.size()) {
+        size_t end = block.find(perLine ? '\n' : ',', pos);
+        if (end == std::string::npos) end = block.size();
+        std::string line = block.substr(pos, end - pos);
+        pos = end + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        size_t colon = line.find(':');
+        if (colon == std::string::npos) continue;
+        std::string name = line.substr(0, colon);
+        while (!name.empty() && (name.back() == ' ' || name.back() == '\t'))
+            name.pop_back();
+        size_t start = line.find_first_not_of(" \t", colon + 1);
+        std::string value;
+        if (start != std::string::npos) {
+            value = line.substr(start);
+            while (!value.empty() && (value.back() == ' ' || value.back() == '\t'))
+                value.pop_back();
+        }
+        if (!name.empty() && !value.empty()) extraHeaders[name] = value;
+    }
+}
+
 std::string HttpClient::urlFor(const std::string& path) const {
     if (path.empty()) return base;
     if (path.compare(0, 7, "http://") == 0 || path.compare(0, 8, "https://") == 0) return path;
@@ -157,18 +239,24 @@ cpr::Payload HttpClient::toPayload(const Query& form) {
 }
 
 HttpResult HttpClient::get(const std::string& path, const Query& query, int timeout) const {
+    const int64_t started = nowMs();
     cpr::Response response =
         cpr::Get(cpr::Url{urlFor(path)}, toParameters(query), headers(), redirect(), sslOptions(),
                  cpr::Timeout{timeoutFor(timeout)});
-    return fromResponse(response);
+    HttpResult result = fromResponse(response);
+    logRequest("GET", displayUrl(urlFor(path), query), started, result);
+    return result;
 }
 
 HttpResult HttpClient::post(const std::string& path, const Query& query, const Query& form,
                             int timeout) const {
+    const int64_t started = nowMs();
     cpr::Response response =
         cpr::Post(cpr::Url{urlFor(path)}, toParameters(query), headers(), toPayload(form),
                   redirect(), sslOptions(), cpr::Timeout{timeoutFor(timeout)});
-    return fromResponse(response);
+    HttpResult result = fromResponse(response);
+    logRequest("POST", displayUrl(urlFor(path), query), started, result);
+    return result;
 }
 
 HttpResult HttpClient::postJson(const std::string& path, const Query& query,
@@ -176,24 +264,41 @@ HttpResult HttpClient::postJson(const std::string& path, const Query& query,
     cpr::Header header = headers();
     header["Content-Type"] = "application/json";
 
+    const int64_t started = nowMs();
     cpr::Response response =
         cpr::Post(cpr::Url{urlFor(path)}, toParameters(query), header, cpr::Body{body.dump()},
                   redirect(), sslOptions(), cpr::Timeout{timeoutFor(timeout)});
-    return fromResponse(response);
+    HttpResult result = fromResponse(response);
+    logRequest("POST", displayUrl(urlFor(path), query), started, result);
+    return result;
 }
 
 void HttpClient::getAsync(const std::string& path, const Query& query,
                           std::function<void(const HttpResult&)> callback, int timeout) const {
-    cpr::GetCallback([callback](const cpr::Response& response) { callback(fromResponse(response)); },
-                     cpr::Url{urlFor(path)}, toParameters(query), headers(), redirect(), sslOptions(),
-                     cpr::Timeout{timeoutFor(timeout)});
+    const int64_t started = nowMs();
+    const std::string url = displayUrl(urlFor(path), query);
+    cpr::GetCallback(
+        [callback, url, started](const cpr::Response& response) {
+            HttpResult result = fromResponse(response);
+            logRequest("GET", url, started, result);
+            callback(result);
+        },
+        cpr::Url{urlFor(path)}, toParameters(query), headers(), redirect(), sslOptions(),
+        cpr::Timeout{timeoutFor(timeout)});
 }
 
 void HttpClient::postAsync(const std::string& path, const Query& query, const Query& form,
                            std::function<void(const HttpResult&)> callback, int timeout) const {
-    cpr::PostCallback([callback](const cpr::Response& response) { callback(fromResponse(response)); },
-                      cpr::Url{urlFor(path)}, toParameters(query), headers(), toPayload(form),
-                      redirect(), sslOptions(), cpr::Timeout{timeoutFor(timeout)});
+    const int64_t started = nowMs();
+    const std::string url = displayUrl(urlFor(path), query);
+    cpr::PostCallback(
+        [callback, url, started](const cpr::Response& response) {
+            HttpResult result = fromResponse(response);
+            logRequest("POST", url, started, result);
+            callback(result);
+        },
+        cpr::Url{urlFor(path)}, toParameters(query), headers(), toPayload(form), redirect(),
+        sslOptions(), cpr::Timeout{timeoutFor(timeout)});
 }
 
 void HttpClient::postJsonAsync(const std::string& path, const Query& query,
@@ -202,9 +307,16 @@ void HttpClient::postJsonAsync(const std::string& path, const Query& query,
     cpr::Header header = headers();
     header["Content-Type"] = "application/json";
 
-    cpr::PostCallback([callback](const cpr::Response& response) { callback(fromResponse(response)); },
-                      cpr::Url{urlFor(path)}, toParameters(query), header, cpr::Body{body.dump()},
-                      redirect(), sslOptions(), cpr::Timeout{timeoutFor(timeout)});
+    const int64_t started = nowMs();
+    const std::string url = displayUrl(urlFor(path), query);
+    cpr::PostCallback(
+        [callback, url, started](const cpr::Response& response) {
+            HttpResult result = fromResponse(response);
+            logRequest("POST", url, started, result);
+            callback(result);
+        },
+        cpr::Url{urlFor(path)}, toParameters(query), header, cpr::Body{body.dump()}, redirect(),
+        sslOptions(), cpr::Timeout{timeoutFor(timeout)});
 }
 
 }  // namespace nxkit

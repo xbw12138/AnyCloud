@@ -45,9 +45,10 @@ public:
     void openItem(size_t index);
     /// Shows the actions menu for the item at `index` (X button).
     void showItemActions(size_t index);
-    /// Downloads a cover image with the provider's headers. `callback` runs
-    /// on the UI thread with the encoded bytes (empty on failure).
-    void loadThumbnail(const std::string& url,
+    /// Downloads a cover image with the headers of `providerId` (falling back
+    /// to the page's provider when empty). `callback` runs on the UI thread
+    /// with the encoded bytes (empty on failure).
+    void loadThumbnail(const std::string& url, const std::string& providerId,
                        std::function<void(const std::string&)> callback);
 
     /// True when the grid is showing tall single-column rows.
@@ -91,6 +92,7 @@ private:
     void promptRename(const DriveFile& file);
     void confirmDelete(const DriveFile& file);
     void pickMoveTarget(const DriveFile& file);
+    void downloadFile(const DriveFile& file);
 
     std::shared_ptr<bool> alive = std::make_shared<bool>(true);
 
@@ -106,9 +108,7 @@ private:
     CloudEmptyView* emptyView = nullptr;
 
     brls::Label* breadcrumb = nullptr;
-    brls::Label* pathLabel = nullptr;
     brls::Label* subtitleLabel = nullptr;
-    brls::Label* hintLabel = nullptr;
     brls::Button* viewToggle = nullptr;
 
     bool listMode = false;
@@ -119,6 +119,9 @@ private:
     bool loading = false;
     /// Login state at the last refresh, used to reload after signing in.
     bool wasLoggedIn = false;
+    /// DriveManager generation when the list was loaded; a different value in
+    /// willAppear means another drive was picked and the list is stale.
+    int providerGeneration = 0;
     /// Incremented on every refresh so in-flight responses can be discarded.
     uint64_t requestSeq = 0;
 };

@@ -71,15 +71,61 @@ public:
         return true;
     }
 
+    bool setQrImage(const std::string& bytes) {
+        this->modules.clear();
+        this->size = 0;
+        this->imageData = bytes;
+        this->imageStale = true;
+        this->invalidate();
+        return !bytes.empty();
+    }
+
     void clearQr() {
-        if (this->modules.empty()) return;
+        if (this->modules.empty() && this->imageData.empty()) return;
         this->size = 0;
         this->modules.clear();
+        this->imageData.clear();
+        this->imageStale = true;
         this->invalidate();
     }
 
     void draw(NVGcontext* vg, float x, float y, float width, float height, brls::Style style,
               brls::FrameContext* ctx) override {
+        if (this->size <= 0 && this->imageData.empty()) return;
+
+        if (this->imageStale) {
+            if (this->imageTexture >= 0) {
+                nvgDeleteImage(vg, this->imageTexture);
+                this->imageTexture = -1;
+            }
+            this->imageStale = false;
+            if (!this->imageData.empty()) {
+                this->imageTexture = nvgCreateImageMem(
+                    vg, 0, reinterpret_cast<unsigned char*>(this->imageData.data()),
+                    static_cast<int>(this->imageData.size()));
+                if (this->imageTexture >= 0)
+                    nvgImageSize(vg, this->imageTexture, &this->imageWidth,
+                                 &this->imageHeight);
+            }
+        }
+
+        if (this->imageTexture >= 0) {
+            float side = std::min(width, height);
+            float ox = x + (width - side) / 2.0f;
+            float oy = y + (height - side) / 2.0f;
+            nvgBeginPath(vg);
+            nvgRoundedRect(vg, ox, oy, side, side, 12.0f);
+            nvgFillColor(vg, nvgRGB(255, 255, 255));
+            nvgFill(vg);
+            NVGpaint paint = nvgImagePattern(
+                vg, ox, oy, side, side, 0.0f, this->imageTexture, 1.0f);
+            nvgBeginPath(vg);
+            nvgRoundedRect(vg, ox, oy, side, side, 8.0f);
+            nvgFillPaint(vg, paint);
+            nvgFill(vg);
+            return;
+        }
+
         if (this->size <= 0 || this->modules.empty()) return;
 
         if (this->drawCount < 3) {
@@ -123,6 +169,11 @@ private:
     int size = 0;
     int drawCount = 0;
     std::vector<unsigned char> modules;
+    std::string imageData;
+    bool imageStale = true;
+    int imageTexture = -1;
+    int imageWidth = 0;
+    int imageHeight = 0;
 };
 
 QRLoginView::QRLoginView() {
@@ -165,6 +216,15 @@ void QRLoginView::setQrContent(const std::string& content) {
         this->qrImage->setVisibility(brls::Visibility::GONE);
         return;
     }
+    this->qrImage->setVisibility(brls::Visibility::VISIBLE);
+}
+
+void QRLoginView::setQrImage(const std::string& bytes) {
+    if (bytes.empty()) {
+        this->qrImage->setVisibility(brls::Visibility::GONE);
+        return;
+    }
+    this->qrImage->setQrImage(bytes);
     this->qrImage->setVisibility(brls::Visibility::VISIBLE);
 }
 

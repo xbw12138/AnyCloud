@@ -48,6 +48,10 @@ public:
     void setHeader(const std::string& name, const std::string& value);
     void removeHeader(const std::string& name);
     void clearHeaders();
+    /// Applies a provider header block. Providers hand over either CRLF
+    /// separated request lines or the comma separated list mpv takes (Quark),
+    /// so both formats are accepted.
+    void setHeaderBlock(const std::string& block);
 
     void setCookie(const std::string& cookie) { cookieValue = cookie; }
     const std::string& cookie() const { return cookieValue; }

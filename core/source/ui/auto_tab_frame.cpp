@@ -193,20 +193,19 @@ void AutoTabFrame::addTab(AutoSidebarItem* tab, TabViewCreator creator) {
         // setTabAttachedView also registers the back action.
         this->setTabAttachedView(newContent);
     });
+    // Count tabs through the group rather than the sidebar children: the bar
+    // may also hold a trailing badge and a spacer.
     auto isDefaultTab =
-        this->sidebar->getChildren().size() - 1 == this->getDefaultTabIndex();
+        this->group.size() - 1 == this->getDefaultTabIndex();
 
     if (isDefaultTab || !isDemandMode) {
-        AutoSidebarItem* item =
-            (AutoSidebarItem*)this->sidebar
-                ->getChildren()[this->sidebar->getChildren().size() - 1];
-        brls::View* newContent = item->getAttachedView();
+        brls::View* newContent = tab->getAttachedView();
         if (!newContent) {
-            newContent = item->createAttachedView();
+            newContent = tab->createAttachedView();
         }
 
         if (isDefaultTab) {
-            this->group.setActive(item);
+            this->group.setActive(tab);
             this->setTabAttachedView(newContent);
         }
     }
@@ -217,7 +216,7 @@ void AutoTabFrame::focusTab(int position) {
 }
 
 void AutoTabFrame::focus2NextTab() {
-    size_t sideBarNum = this->sidebar->getChildren().size();
+    size_t sideBarNum = this->group.size();
     if (sideBarNum == 0) return;
 
     int currentIndex = this->group.getActiveIndex();
@@ -241,7 +240,7 @@ void AutoTabFrame::focus2NextTab() {
 }
 
 void AutoTabFrame::focus2LastTab() {
-    size_t sideBarNum = this->sidebar->getChildren().size();
+    size_t sideBarNum = this->group.size();
     if (sideBarNum == 0) return;
 
     int currentIndex = this->group.getActiveIndex();
@@ -476,7 +475,8 @@ brls::View* AutoTabFrame::getNextFocus(brls::FocusDirection direction,
 void AutoTabFrame::setFontSize(float size) {
     this->itemFontSize = size;
     for (auto item : this->sidebar->getChildren()) {
-        ((AutoSidebarItem*)item)->setFontSize(size);
+        if (auto* tab = dynamic_cast<AutoSidebarItem*>(item))
+            tab->setFontSize(size);
     }
 }
 
@@ -485,7 +485,8 @@ float AutoTabFrame::getFontSize() { return this->itemFontSize; }
 void AutoTabFrame::setHorizontalMode(bool value) {
     this->isHorizontal = value;
     for (auto item : this->sidebar->getChildren()) {
-        ((AutoSidebarItem*)item)->setHorizontalMode(value);
+        if (auto* tab = dynamic_cast<AutoSidebarItem*>(item))
+            tab->setHorizontalMode(value);
     }
     if (value) {
         this->sidebar->setPadding(8, 20, 8, 20);
@@ -511,8 +512,23 @@ void AutoTabFrame::addItem(AutoSidebarItem* tab, TabViewCreator creator,
 }
 
 AutoSidebarItem* AutoTabFrame::getItem(int position) {
-    return dynamic_cast<AutoSidebarItem*>(
-        this->sidebar->getChildren()[position]);
+    if (position < 0) return nullptr;
+    int index = 0;
+    for (auto* child : this->sidebar->getChildren()) {
+        auto* item = dynamic_cast<AutoSidebarItem*>(child);
+        if (!item) continue;  // trailing badge / spacer
+        if (index++ == position) return item;
+    }
+    return nullptr;
+}
+
+void AutoTabFrame::setSidebarTrailingView(brls::View* view) {
+    if (!view) return;
+    brls::Box* spacer = new brls::Box();
+    spacer->setGrow(1);
+    spacer->setHeight(1);
+    this->sidebar->addView(spacer);
+    this->sidebar->addView(view);
 }
 
 void AutoTabFrame::clearItems() {
@@ -1060,8 +1076,10 @@ void AutoSidebarItemGroup::removeView(AutoSidebarItem* view) {
 }
 
 int AutoSidebarItemGroup::getActiveIndex() {
-    for (AutoSidebarItem* item : this->items) {
-        if (item->isActive()) return item->getCurrentIndex();
+    // Report the position among tabs, not among all sidebar children, so the
+    // index stays valid when the bar holds a trailing badge.
+    for (size_t i = 0; i < this->items.size(); i++) {
+        if (this->items[i]->isActive()) return (int)i;
     }
     return -1;
 }

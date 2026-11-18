@@ -5,6 +5,7 @@
 #include "cloud/drive/quark_drive.hpp"
 
 #include <cstdio>
+#include <ctime>
 #include <exception>
 #include <random>
 
@@ -104,8 +105,28 @@ QuarkDrive::QuarkDrive() {
 }
 
 void QuarkDrive::loadCredentials() {
-    std::lock_guard<std::mutex> lock(cookieMutex);
-    http.setCookie(nxkit::AuthStore::instance().get("cloud.quark.cookie"));
+    std::string cookie;
+    {
+        std::lock_guard<std::mutex> lock(cookieMutex);
+        http.setCookie(nxkit::AuthStore::instance().get("cloud.quark.cookie"));
+        cookie = http.cookie();
+    }
+    // The session cookie used by the thumbnail endpoints (`__puus`) expires
+    // after about a day. /config hands back a fresh one, so a stored cookie
+    // keeps working for covers after a restart.
+    if (!cookie.empty()) refreshSessionIfStale();
+}
+
+void QuarkDrive::refreshSessionIfStale() {
+    const int64_t interval = 30 * 60;  // seconds
+    int64_t now = (int64_t)time(nullptr);
+    {
+        std::lock_guard<std::mutex> lock(cookieMutex);
+        if (now - sessionRefreshedAt < interval) return;
+        sessionRefreshedAt = now;
+    }
+    // Cookies rotated by this response are persisted by the merge in driveGet.
+    driveGet("/config", {}, [](const json&, const std::string&) {});
 }
 
 bool QuarkDrive::isLoggedIn() const {
@@ -128,15 +149,25 @@ void QuarkDrive::saveCookie() {
 
 void QuarkDrive::mergeResponseCookies(const nxkit::HttpResult& result) {
     if (result.cookies.empty()) return;
-    std::lock_guard<std::mutex> lock(cookieMutex);
-    http.setCookie(nxkit::mergeCookies(http.cookie(), result.cookies));
+    std::string merged;
+    {
+        std::lock_guard<std::mutex> lock(cookieMutex);
+        merged = nxkit::mergeCookies(http.cookie(), result.cookies);
+        if (merged == http.cookie()) return;
+        http.setCookie(merged);
+    }
+    // Rotated cookies (e.g. __puus on every /config) must outlive the
+    // process, otherwise the next start would use an expired session and the
+    // thumbnail endpoints would answer 401.
+    nxkit::AuthStore::instance().set("cloud.quark.cookie", merged);
 }
 
 std::string QuarkDrive::playbackHeaders() const {
     std::lock_guard<std::mutex> lock(cookieMutex);
-    // mpv's http-header-fields is a comma separated string list.
-    return "Cookie: " + http.cookie() + ",Referer: " + kReferer +
-           ",User-Agent: " + kUserAgent;
+    // One header per line: the user agent contains commas, so a comma
+    // separated list cannot be split safely. mpv's consumer converts this.
+    return "Cookie: " + http.cookie() + "\r\nReferer: " + kReferer +
+           "\r\nUser-Agent: " + kUserAgent;
 }
 
 // -----------------------------------------------------------------------------
@@ -270,8 +301,10 @@ void QuarkDrive::accountInfo(
             mergeResponseCookies(result);
             if (result.ok) {
                 json root = result.json();
-                info.nickname =
-                    root.value("data", json::object()).value("nickname", "");
+                json data = root.value("data", json::object());
+                info.nickname = data.value("nickname", "");
+                info.avatarUrl =
+                    data.value("avatar_url", data.value("avatar", ""));
             }
         }
 
@@ -355,6 +388,7 @@ void QuarkDrive::listFiles(
     const std::string& dirId, int page, int pageSize,
     std::function<void(const std::vector<DriveFile>& files, int total,
                        const std::string& error)> callback) {
+    refreshSessionIfStale();
     driveGet("/file/sort",
              {{"pdir_fid", dirId},
               {"_page", std::to_string(page)},
@@ -378,13 +412,31 @@ void QuarkDrive::listFiles(
                      file.updatedAt = item.value("updated_at", (int64_t)0);
                      file.category = item.value("category", 0);
                      // Cover image URL used by the grid/list cards. Quark
-                     // exposes it as `thumbnail` (larger variants and older
-                     // payloads use `big_thumbnail` / `thumb_url`).
+                     // returns `thumbnail` for videos and images (larger
+                     // variants use `big_thumbnail`).
                      file.thumb = item.value("thumbnail", "");
                      if (file.thumb.empty())
                          file.thumb = item.value("big_thumbnail", "");
                      if (file.thumb.empty())
                          file.thumb = item.value("thumb_url", "");
+                     // Fallback for payloads without a poster url: videos and
+                     // images have separate thumbnail endpoints (the generic
+                     // one rejects video fids with 400).
+                     if (file.thumb.empty() && !file.isDir) {
+                         std::string objectCategory =
+                             item.value("obj_category", "");
+                         if (objectCategory == "video" || file.category == 1)
+                             file.thumb =
+                                 "https://drive-pc.quark.cn/1/clouddrive/file/"
+                                 "video/thumbnail?fid=" +
+                                 file.id + "&pr=ucpro&fr=pc";
+                         else if (objectCategory == "image" ||
+                                  file.category == 3)
+                             file.thumb =
+                                 "https://drive-pc.quark.cn/1/clouddrive/file/"
+                                 "thumbnail?fid=" +
+                                 file.id + "&size=400&pr=ucpro&fr=pc";
+                     }
                      files.push_back(std::move(file));
                  }
                  int total = root.value("metadata", json::object())

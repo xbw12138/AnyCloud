@@ -38,12 +38,18 @@ void ensureDirectory(const std::string& path) {
     std::string current;
     for (size_t i = 0; i < path.size(); i++) {
         current += path[i];
-        if (path[i] != '/' || i + 1 >= path.size()) continue;
-        // Do not try to mkdir drive roots such as "sdmc:/".
-        if (current.size() > 2 && current[current.size() - 2] == ':') continue;
-        mkdir(current.c_str(), 0777);
+        if (path[i] != '/') continue;
+        // No trailing slash for mkdir, and skip drive roots like "sdmc:".
+        std::string dir = current.substr(0, current.size() - 1);
+        if (dir.empty() || dir.back() == ':') continue;
+        mkdir(dir.c_str(), 0777);
     }
-    if (!path.empty() && path.back() != '/') mkdir(path.c_str(), 0777);
+    // The loop above used to skip the last component, so "a/b/" never
+    // created "b". Always create the trimmed path too.
+    std::string trimmed = path;
+    while (!trimmed.empty() && trimmed.back() == '/') trimmed.pop_back();
+    if (!trimmed.empty() && trimmed.back() != ':')
+        mkdir(trimmed.c_str(), 0777);
 }
 
 void ensureDataDirectory() { ensureDirectory(dataDirectory()); }

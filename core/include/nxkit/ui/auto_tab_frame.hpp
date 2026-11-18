@@ -110,6 +110,7 @@ public:
     void clear();
     void removeView(AutoSidebarItem* view);
     int getActiveIndex();
+    size_t size() const { return this->items.size(); }
 
 private:
     std::vector<AutoSidebarItem*> items;
@@ -189,6 +190,10 @@ public:
 
     void addItem(AutoSidebarItem* tab, TabViewCreator creator,
                  brls::GenericEvent::Callback focusCallback);
+
+    /// Adds a view pinned to the far end of the tab bar (a status badge, for
+    /// example). Add it after every tab: it is ignored by tab switching.
+    void setSidebarTrailingView(brls::View* view);
 
     AutoSidebarItem* getItem(int position);
 

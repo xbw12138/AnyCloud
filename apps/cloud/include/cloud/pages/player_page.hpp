@@ -76,9 +76,28 @@ private:
     /// Reveals the video OSD and schedules it to fade out after a few seconds.
     /// `autoHide=false` keeps it on screen (paused / loading).
     void showOsd(bool autoHide = true);
+    /// Replaces the control hint with `text` for a moment. `Application::notify`
+    /// is a no-op in this borealis build, so player feedback needs the OSD.
+    void showPlayerMessage(const std::string& text);
+    int messageToken = 0;
     void seekBy(int64_t seconds);
     void showQualityMenu();
     void presentQualityMenu();
+    /// L3: playback speed menu (0.5x - 2.0x).
+    void showSpeedMenu();
+    void applySpeed(double speed);
+    /// R3: video aspect ratio menu (default, 16:9, 4:3, 1:1, 21:9, stretch).
+    void showAspectMenu();
+    void applyAspect(int index, bool notify);
+    /// Looks for subtitle files next to the current video and auto-loads the
+    /// one whose name matches the video.
+    void requestSubtitles();
+    /// Loads one page of the video's directory while collecting subtitles.
+    void fetchSubtitlePage();
+    /// MINUS: lists the subtitles found next to the video ("off" first).
+    void showSubtitleMenu();
+    /// Downloads and activates subtitles[index], -1 turns subtitles off.
+    void selectSubtitle(int index);
     void retryWithSoftwareDec();
     bool savePosition();
 
@@ -92,9 +111,26 @@ private:
     size_t playlistIndex = 0;
     /// What happens when the last file ends (X cycles it).
     LoopMode loopMode = LoopMode::Off;
+    /// Playback speed picked with the L3 menu; reapplied on every load.
+    double playbackSpeed = 1.0;
+    /// Aspect ratio picked with the R3 menu; 0 keeps the video's own ratio.
+    int aspectIndex = 0;
 
     std::vector<VideoStream> streams;
     int streamIndex = -1;
+
+    /// Subtitle files found in the directory of the current video.
+    std::vector<DriveFile> subtitles;
+    /// Entry of `subtitles` that is active, -1 when subtitles are off.
+    int subtitleIndex = -1;
+    /// Id of the video `subtitles` were collected for, guards late replies.
+    std::string subtitleScanId;
+    std::string subtitleScanStem;
+    int subtitleScanPage = 0;
+    /// Local copy of the active subtitle, re-applied after a reload.
+    std::string activeSubtitlePath;
+    /// Set when a subtitle should be applied as soon as mpv finished loading.
+    std::string pendingSubtitlePath;
 
     std::string lastUrl;
     std::string lastHeaders;

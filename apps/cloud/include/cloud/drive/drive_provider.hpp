@@ -27,6 +27,11 @@ struct DriveFile {
     /// home screen can group a folder's videos into one series.
     std::string parentId;
     std::string parentName;
+    /// Drive this entry belongs to. Only filled for locally stored entries
+    /// such as the recent list: `providerId` is the stable id used to resolve
+    /// the provider again, `provider` is the display name shown in the UI.
+    std::string providerId;
+    std::string provider;
 
     MediaKind mediaKind() const;
 };
@@ -43,6 +48,7 @@ struct VideoStream {
 struct AccountInfo {
     std::string nickname;
     std::string memberType;
+    std::string avatarUrl;
     uint64_t usedCapacity = 0;
     uint64_t totalCapacity = 0;
 };
@@ -80,6 +86,8 @@ public:
     virtual void qrPoll(const std::string& token,
                         std::function<void(QrStatus status, const std::string& error)>
                             callback) = 0;
+    /// True when qrToken() returns an image url instead of QR text content.
+    virtual bool qrContentIsImage() const { return false; }
 
     // --- Account -------------------------------------------------------------
     virtual void accountInfo(

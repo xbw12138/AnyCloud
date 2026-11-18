@@ -27,6 +27,7 @@ public:
 
 private:
     void requestQr();
+    void loadQrImage(const std::string& url);
     void startPolling();
     void stopPolling();
 

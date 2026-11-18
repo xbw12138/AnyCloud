@@ -4,6 +4,8 @@
 
 #include "cloud/main_activity.hpp"
 
+#include "cloud/drive/drive_manager.hpp"
+#include "cloud/pages/downloads_page.hpp"
 #include "cloud/pages/file_list_page.hpp"
 #include "cloud/pages/profile_page.hpp"
 #include "nxkit/ui/auto_tab_frame.hpp"
@@ -11,6 +13,54 @@
 using namespace brls::literals;
 
 namespace cloud {
+
+namespace {
+
+constexpr int kDownloadsTabIndex = 2;
+
+AutoTabFrame* gTabs = nullptr;
+
+/// Drive name pill pinned to the right end of the tab bar. It is a passive
+/// indicator; switching lives on the profile page.
+class ProviderBadge : public brls::Box {
+public:
+    ProviderBadge() {
+        brls::Theme theme = brls::Application::getTheme();
+
+        this->setAxis(brls::Axis::ROW);
+        this->setAlignItems(brls::AlignItems::CENTER);
+        this->setHeight(34);
+        this->setPadding(0, 16, 0, 16);
+        this->setCornerRadius(17);
+        this->setBackgroundColor(theme["cloud/surface_alt"]);
+
+        this->label = new brls::Label();
+        this->label->setFontSize(14);
+        this->label->setTextColor(theme["cloud/text_secondary"]);
+        this->label->setHeight(18);
+        this->addView(this->label);
+    }
+
+    void setText(const std::string& text) { this->label->setText(text); }
+
+private:
+    brls::Label* label = nullptr;
+};
+
+ProviderBadge* gProviderBadge = nullptr;
+
+}  // namespace
+
+void focusDownloadsTab() {
+    if (!gTabs) return;
+    gTabs->focusTab(kDownloadsTabIndex);
+}
+
+void refreshProviderBadge() {
+    if (!gProviderBadge) return;
+    auto provider = DriveManager::instance().current();
+    gProviderBadge->setText(provider ? provider->name() : "");
+}
 
 static void addTab(AutoTabFrame* tabs, const std::string& label,
                    TabViewCreator creator) {
@@ -53,7 +103,16 @@ brls::View* MainActivity::createContentView() {
         return new FileListPage(FileListPage::Mode::Recent);
     });
     addTab(tabs, "cloud/tab/files"_i18n, [] { return new FileListPage(); });
+    addTab(tabs, "cloud/tab/downloads"_i18n, [] { return new DownloadPage(); });
     addTab(tabs, "cloud/tab/profile"_i18n, [] { return new ProfilePage(); });
+
+    // Active drive badge, right-aligned in the bar. It opens the drive picker,
+    // so switching is possible from any tab.
+    gProviderBadge = new ProviderBadge();
+    tabs->setSidebarTrailingView(gProviderBadge);
+    refreshProviderBadge();
+
+    gTabs = tabs;
 
     // L / R switch sections from anywhere. The top bar is still reachable by
     // moving up out of the content, but this keeps section switching working

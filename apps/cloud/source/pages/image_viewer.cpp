@@ -93,22 +93,7 @@ void ImageViewer::showCurrent() {
                 nxkit::HttpResult result;
                 try {
                     nxkit::HttpClient client;
-                    // Split the CRLF separated header block into pairs.
-                    size_t pos = 0;
-                    while (pos < headers.size()) {
-                        size_t end = headers.find("\r\n", pos);
-                        if (end == std::string::npos) end = headers.size();
-                        std::string line = headers.substr(pos, end - pos);
-                        pos = end + 2;
-                        size_t colon = line.find(':');
-                        if (colon == std::string::npos) continue;
-                        std::string name = line.substr(0, colon);
-                        std::string value = line.substr(colon + 1);
-                        while (!value.empty() && value.front() == ' ')
-                            value.erase(value.begin());
-                        if (!name.empty() && !value.empty())
-                            client.setHeader(name, value);
-                    }
+                    client.setHeaderBlock(headers);
                     client.setTimeout(30000);
                     result = client.get(url);
                 } catch (const std::exception& e) {

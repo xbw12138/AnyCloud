@@ -16,7 +16,7 @@ public:
     QuarkDrive();
 
     std::string id() const override { return "quark"; }
-    std::string name() const override { return "AnyCloud"; }
+    std::string name() const override { return "夸克网盘"; }
 
     void loadCredentials() override;
     bool isLoggedIn() const override;
@@ -77,11 +77,17 @@ private:
     /// Follows redirects manually, merging every Set-Cookie into the jar.
     void collectCookies(const std::string& url);
 
+    /// Asks /config for a fresh `__puus` when the current one is old. The
+    /// thumbnail endpoints reject the stale cookie with 401 while the file
+    /// APIs keep working, so covers would silently stop loading.
+    void refreshSessionIfStale();
+
     void saveCookie();
     void mergeResponseCookies(const nxkit::HttpResult& result);
 
     nxkit::HttpClient http;
     mutable std::mutex cookieMutex;
+    int64_t sessionRefreshedAt = 0;
 };
 
 }  // namespace cloud

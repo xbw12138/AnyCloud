@@ -9,10 +9,15 @@
 #include <clocale>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 #include <borealis/core/application.hpp>
 #include <borealis/core/thread.hpp>
 #include <fmt/format.h>
+
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -147,6 +152,25 @@ MPVCore::MPVCore() {
 
 MPVCore::~MPVCore() = default;
 
+#ifdef __SWITCH__
+/// libass needs a font file on disk and this build has no fontconfig, so dump
+/// one of the console's shared fonts to the mpv config dir.
+static bool writeSharedFont(const std::string& path, PlSharedFontType type) {
+    PlFontData font;
+    if (R_FAILED(plGetSharedFontByType(&font, type))) return false;
+    FILE* out = fopen(path.c_str(), "wb");
+    if (!out) return false;
+    size_t written = fwrite(font.address, 1, font.size, out);
+    fclose(out);
+    if (written != font.size) {
+        remove(path.c_str());
+        return false;
+    }
+    brls::Logger::info("mpv: subfont from shared font type {}", (int)type);
+    return true;
+}
+#endif
+
 void MPVCore::init() {
     setlocale(LC_NUMERIC, "C");
     this->mpv = mpv_create();
@@ -155,7 +179,9 @@ void MPVCore::init() {
     }
     std::string confDir = nxkit::dataDirectory();
     // misc
-    mpv_set_option_string(mpv, "config", "no");
+    // Do not pass --config=no: mpv clears the config dir when config loading
+    // is disabled (mp_init_paths), and then subfont.ttf is never found and
+    // libass has no font to render subtitles with.
     mpv_set_option_string(mpv, "gpu-shader-cache-dir",
                           fmt::format("{}cache", confDir).c_str());
     mpv_set_option_string(mpv, "ytdl", "no");
@@ -168,6 +194,41 @@ void MPVCore::init() {
     mpv_set_option_string(mpv, "hr-seek", "yes");
     mpv_set_option_string(mpv, "reset-on-next-file", "speed,pause");
     mpv_set_option_string(mpv, "vo", "libmpv");
+
+    // External subtitles are rendered by libass. This build has no
+    // fontconfig and the packaged romfs drops resources/font, so libass has
+    // no font at all unless mpv finds "subfont.ttf" in its config directory.
+    // Build that file from the console's own shared font instead of shipping
+    // a font in the NRO.
+#ifdef __SWITCH__
+    std::string mpvHome = nxkit::dataPath("mpv");
+    nxkit::ensureDirectory(mpvHome);
+    std::string subfont = mpvHome + "/subfont.ttf";
+    bool haveFont = false;
+    if (FILE* probe = fopen(subfont.c_str(), "rb")) {
+        fclose(probe);
+        haveFont = true;
+    } else {
+        // Simplified Chinese first: it covers Latin and CJK subtitles.
+        haveFont =
+            writeSharedFont(subfont, PlSharedFontType_ChineseSimplified) ||
+            writeSharedFont(subfont, PlSharedFontType_ChineseTraditional) ||
+            writeSharedFont(subfont, PlSharedFontType_Standard);
+    }
+    if (!haveFont) brls::Logger::error("mpv: no font for subtitles");
+    // libmpv's builtin profile sets config=no, and mp_init_paths() then blanks
+    // the config dir, so subfont.ttf is never found. Re-enable config loading:
+    // our config dir only contains the font, there is no mpv.conf.
+    mpv_set_option_string(mpv, "config", "yes");
+    setenv("MPV_HOME", mpvHome.c_str(), 1);
+    mpv_set_option_string(mpv, "config-dir", mpvHome.c_str());
+    brls::Logger::info("mpv: config dir {} font {}", mpvHome, haveFont);
+#endif
+    mpv_set_option_string(mpv, "sub-font", "sans-serif");
+    mpv_set_option_string(mpv, "sub-font-size", "45");
+    mpv_set_option_string(mpv, "sub-border-size", "2.4");
+    mpv_set_option_string(mpv, "sub-shadow-offset", "1.5");
+    mpv_set_option_string(mpv, "sub-margin-y", "40");
 
     if (MPVCore::LOW_QUALITY) {
         brls::Logger::info("lavc: skip loop filter and set fast decode");
