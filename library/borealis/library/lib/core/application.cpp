@@ -630,6 +630,11 @@ bool Application::handleAction(char button, bool repeating)
 
 void Application::frame()
 {
+    // Nothing is visible while another applet is in front; skipping the render
+    // keeps the CPU and GPU free for the system UI (and makes returning to the
+    // app snappier).
+    if (!Application::windowFocused) return;
+
     VideoContext* videoContext = Application::platform->getVideoContext();
 
     // Frame context
@@ -1128,6 +1133,16 @@ VoidEvent* Application::getWindowShouldCloseEvent()
 Event<bool>* Application::getWindowFocusChangedEvent()
 {
     return &Application::windowFocusChangedEvent;
+}
+
+bool Application::isWindowFocused()
+{
+    return Application::windowFocused;
+}
+
+void Application::setWindowFocused(bool focused)
+{
+    Application::windowFocused = focused;
 }
 
 int Application::getFont(std::string fontName)

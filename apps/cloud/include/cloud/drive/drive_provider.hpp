@@ -53,6 +53,10 @@ struct AccountInfo {
     uint64_t totalCapacity = 0;
 };
 
+/// True when an error message means the stored credentials are no longer
+/// accepted (expired cookie/token), so the user has to sign in again.
+bool isAuthError(const std::string& error);
+
 enum class QrStatus {
     Success,   // login finished, credentials are stored
     Waiting,   // not scanned yet

@@ -240,6 +240,11 @@ class Application
     static VoidEvent* getWindowShouldCloseEvent();
     static Event<bool>* getWindowFocusChangedEvent();
 
+    /// Whether the window currently has focus. Rendering is skipped while the
+    /// app runs in the background so it does not compete with the system UI.
+    static bool isWindowFocused();
+    static void setWindowFocused(bool focused);
+
     static View* getCurrentFocus();
 
     static std::string getTitle();
@@ -356,6 +361,7 @@ class Application
     inline static VoidEvent windowCreationDoneEvent;
     inline static VoidEvent windowShouldCloseEvent;
     inline static Event<bool> windowFocusChangedEvent;
+    inline static bool windowFocused = true;
 
     inline static std::unordered_map<std::string, XMLViewCreator> xmlViewsRegister;
 

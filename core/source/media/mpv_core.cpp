@@ -521,7 +521,18 @@ bool MPVCore::isValid() { return mpv_context != nullptr; }
 
 void MPVCore::draw(brls::Rect area, float alpha) {
     if (mpv_context == nullptr) return;
-    if (!(this->rect == area)) setFrameSize(area);
+    // Docking or undocking changes the framebuffer size while the layout size
+    // stays the same, so also rebuild the target texture on mode changes.
+    static unsigned lastWindowWidth = 0;
+    static unsigned lastWindowHeight = 0;
+    bool windowChanged =
+        lastWindowWidth != brls::Application::windowWidth ||
+        lastWindowHeight != brls::Application::windowHeight;
+    if (!(this->rect == area) || windowChanged) {
+        lastWindowWidth = brls::Application::windowWidth;
+        lastWindowHeight = brls::Application::windowHeight;
+        setFrameSize(area);
+    }
 
 #ifdef MPV_USE_FB
     // OpenGL 将 FBO 绘制到屏幕上

@@ -59,6 +59,7 @@ nxkit_add_app(cloud
         source/pages/player_page.cpp
         source/pages/image_viewer.cpp
         source/ui/cloud_empty_view.cpp
+        source/ui/popup.cpp
         source/util/crypto.cpp
         source/util/text_encoding.cpp
         source/util/gbk_table.cpp

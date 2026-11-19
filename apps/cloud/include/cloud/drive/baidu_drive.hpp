@@ -69,6 +69,10 @@ private:
     void saveCookie();
     void mergeResponseCookies(const nxkit::HttpResult& result);
     void ensureUid(std::function<void(bool ok, const std::string& error)> done);
+    /// Web APIs reject cookie-only requests with 400 "未登录" once the server
+    /// stops trusting them; the browser always sends bdstoken alongside.
+    void ensureBdstoken(std::function<void(const std::string& token)> next);
+    nxkit::Query panQuery(nxkit::Query query) const;
     void requestDownloadUrl(
         const std::string& path,
         std::function<void(const std::string& url, const std::string& headers,
@@ -77,6 +81,7 @@ private:
 
     nxkit::HttpClient http;
     mutable std::mutex cookieMutex;
+    mutable std::string bdstoken;
     mutable std::unordered_map<std::string, int64_t> fsIds;
 };
 

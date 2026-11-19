@@ -547,10 +547,18 @@ void ProfilePage::refreshAccount() {
                 if (!*alive || this->accountRequest != request) return;
                 this->refreshing = false;
                 this->refreshTile->setTitle("cloud/profile/refresh"_i18n);
-                if (error.empty())
+                if (error.empty()) {
                     this->account = info;
-                else
+                } else if (isAuthError(error)) {
+                    // The saved cookie/token is no longer accepted: drop back
+                    // to the signed-out card and point at the login action.
+                    this->loggedIn = false;
+                    this->account = AccountInfo();
+                    brls::Application::notify(
+                        "cloud/login/session_expired"_i18n);
+                } else {
                     brls::Application::notify(error);
+                }
                 this->applyAccount();
             });
         });

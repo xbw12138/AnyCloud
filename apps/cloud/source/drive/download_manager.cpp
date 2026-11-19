@@ -7,13 +7,18 @@
 #include <cpr/async.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cerrno>
 #include <fstream>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 
+#include <borealis/core/application.hpp>
 #include <nlohmann/json.hpp>
 
 #include "nxkit/http_client.hpp"
@@ -100,6 +105,13 @@ std::string joinPath(const std::string& dir, const std::string& name) {
 bool pathExists(const std::string& path) {
     struct stat info;
     return stat(path.c_str(), &info) == 0;
+}
+
+/// Size of a regular file, 0 when missing.
+uint64_t fileSize(const std::string& path) {
+    struct stat info;
+    if (stat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode)) return 0;
+    return (uint64_t)info.st_size;
 }
 
 bool isDirectory(const std::string& path) {
@@ -205,12 +217,14 @@ void DownloadManager::loadHistory() {
         auto state = std::make_shared<TaskState>();
         state->name = item.value("name", std::string());
         state->provider = item.value("provider", std::string());
+        state->directory = item.value("directory", std::string());
         state->path = item.value("path", std::string());
         state->error = item.value("error", std::string());
         if (state->name.empty()) continue;
 
         int raw = item.value("state", (int)DownloadState::Failed);
-        if (raw < (int)DownloadState::Queued || raw > (int)DownloadState::Cancelled)
+        if (raw < (int)DownloadState::Queued ||
+            raw > (int)DownloadState::Cancelled)
             raw = (int)DownloadState::Failed;
         state->state = (DownloadState)raw;
         state->received = item.value("received", (uint64_t)0);
@@ -238,6 +252,7 @@ void DownloadManager::saveHistory() {
             nlohmann::json item;
             item["name"] = task->name;
             item["provider"] = task->provider;
+            item["directory"] = task->directory;
             item["path"] = task->path;
             item["received"] = task->received;
             item["total"] = task->total;
@@ -342,7 +357,7 @@ void DownloadManager::launch(const std::shared_ptr<TaskState>& state) {
                 state->state = DownloadState::Running;
             }
 
-            cpr::async([state, provider, url, headers, path, dir, name] {
+            cpr::async([state, url, headers, path, dir, name] {
                 std::string dest = path;
                 FILE* file = fopen(dest.c_str(), "wb");
                 if (!file) {
@@ -350,8 +365,8 @@ void DownloadManager::launch(const std::shared_ptr<TaskState>& state) {
                     // FatFs on Switch reports ENOENT for names it cannot
                     // encode (non-ASCII, reserved chars). Probe the folder to
                     // tell a bad name apart from an unwritable directory.
-                    std::string probe = joinPath(dir, "cloud_probe.tmp");
-                    FILE* probeFile = fopen(probe.c_str(), "wb");
+                    std::string probePath = joinPath(dir, "cloud_probe.tmp");
+                    FILE* probeFile = fopen(probePath.c_str(), "wb");
                     if (!probeFile) {
                         std::string reason = strerror(errno);
                         DownloadManager::instance().update(
@@ -363,7 +378,7 @@ void DownloadManager::launch(const std::shared_ptr<TaskState>& state) {
                         return;
                     }
                     fclose(probeFile);
-                    unlink(probe.c_str());
+                    unlink(probePath.c_str());
 
                     dest = uniquePath(joinPath(dir, asciiName(name)));
                     DownloadManager::instance().update(
@@ -381,63 +396,98 @@ void DownloadManager::launch(const std::shared_ptr<TaskState>& state) {
                     }
                 }
 
-                cpr::Session session;
-                session.SetUrl(cpr::Url{url});
-                session.SetOption(parseHeaders(headers));
-                session.SetOption(cpr::ConnectTimeout{20000});
-                session.SetOption(cpr::Redirect{true});
-                nxkit::HttpClient::applyCaBundle(session);
+                cpr::Header baseHeaders = parseHeaders(headers);
+
+                bool finished = false;
+                std::string failure;
+
+                if (!state->cancelled.load()) {
+                    DownloadManager::instance().update(
+                        state, [](TaskState& task) { task.received = 0; });
+
+                    cpr::Session session;
+                    session.SetUrl(cpr::Url{url});
+                    session.SetOption(baseHeaders);
+                    session.SetOption(cpr::ConnectTimeout{20000});
+                    session.SetOption(cpr::Redirect{true});
+                    nxkit::HttpClient::applyCaBundle(session);
 #ifdef __SWITCH__
-                session.SetOption(cpr::VerifySsl{false});
+                    session.SetOption(cpr::VerifySsl{false});
 #endif
-                session.SetWriteCallback(cpr::WriteCallback(
-                    [file, state](std::string data, intptr_t) -> bool {
-                        if (state->cancelled.load()) return false;
-                        if (data.empty()) return true;
-                        size_t written =
-                            fwrite(data.data(), 1, data.size(), file);
-                        return written == data.size();
-                    }));
-                session.SetProgressCallback(cpr::ProgressCallback(
-                    [state](cpr::cpr_pf_arg_t total, cpr::cpr_pf_arg_t now,
-                            cpr::cpr_pf_arg_t, cpr::cpr_pf_arg_t,
-                            intptr_t) -> bool {
-                        DownloadManager::instance().update(
-                            state, [&](TaskState& task) {
-                                if (total > 0)
-                                    task.total = (uint64_t)total;
-                                task.received = (uint64_t)now;
-                            });
-                        return !state->cancelled.load();
-                    }));
+                    session.SetWriteCallback(cpr::WriteCallback(
+                        [file, state](std::string data, intptr_t) -> bool {
+                            if (state->cancelled.load()) return false;
+                            if (data.empty()) return true;
+                            size_t written =
+                                fwrite(data.data(), 1, data.size(), file);
+                            return written == data.size();
+                        }));
+                    session.SetProgressCallback(cpr::ProgressCallback(
+                        [state](cpr::cpr_pf_arg_t total, cpr::cpr_pf_arg_t now,
+                                cpr::cpr_pf_arg_t, cpr::cpr_pf_arg_t,
+                                intptr_t) -> bool {
+                            // While the system menu is in front, stop reading so
+                            // neither the network nor the SD card competes with
+                            // the console's UI; the transfer continues once the
+                            // app regains focus.
+                            while (!brls::Application::isWindowFocused() &&
+                                   !state->cancelled.load())
+                                std::this_thread::sleep_for(
+                                    std::chrono::milliseconds(50));
+                            DownloadManager::instance().update(
+                                state, [&](TaskState& task) {
+                                    if (total > 0)
+                                        task.total = (uint64_t)total;
+                                    task.received = (uint64_t)now;
+                                });
+                            return !state->cancelled.load();
+                        }));
 
-                cpr::Response response = session.Get();
-                fclose(file);
+                    cpr::Response response = session.Get();
+                    fclose(file);
 
-                bool cancelled = state->cancelled.load();
-                long status = response.status_code;
-                if (cancelled) {
-                    unlink(path.c_str());
+                    if (!response.error.message.empty() ||
+                        (response.status_code != 200 &&
+                         response.status_code != 206)) {
+                        failure = response.error.message;
+                        if (failure.empty())
+                            failure =
+                                "http " + std::to_string(response.status_code);
+                    } else {
+                        finished = true;
+                    }
+                } else {
+                    fclose(file);
+                }
+
+                if (state->cancelled.load()) {
+                    unlink(dest.c_str());
                     DownloadManager::instance().update(
                         state, [](TaskState& task) {
                             task.state = DownloadState::Cancelled;
                         });
-                } else if (!response.error.message.empty() ||
-                           (status != 200 && status != 206)) {
-                    unlink(path.c_str());
-                    std::string error = response.error.message;
-                    if (error.empty())
-                        error = "http " + std::to_string(status);
+                } else if (!finished) {
+                    unlink(dest.c_str());
                     DownloadManager::instance().update(
                         state, [&](TaskState& task) {
                             task.state = DownloadState::Failed;
-                            task.error = error;
+                            task.error = failure.empty() ? "download failed"
+                                                         : failure;
                         });
                 } else {
                     DownloadManager::instance().update(
-                        state, [](TaskState& task) {
-                            task.state = DownloadState::Done;
-                            if (task.total == 0) task.total = task.received;
+                        state, [&](TaskState& task) {
+                            uint64_t size = fileSize(dest);
+                            // A transfer that ends early must not pass as done.
+                            if (task.total > 0 && size + 1024 < task.total) {
+                                task.received = size;
+                                task.state = DownloadState::Failed;
+                                task.error = "incomplete download";
+                            } else {
+                                task.received = size;
+                                task.total = size;
+                                task.state = DownloadState::Done;
+                            }
                         });
                 }
             });
@@ -486,18 +536,24 @@ void DownloadManager::remove(uint64_t id) {
 }
 
 void DownloadManager::cancel(uint64_t id) {
-    std::lock_guard<std::mutex> lock(mutex);
-    for (auto& task : tasks) {
-        if (task->id != id) continue;
-        if (task->state == DownloadState::Done ||
-            task->state == DownloadState::Failed ||
-            task->state == DownloadState::Cancelled)
-            return;
-        task->cancelled.store(true);
-        if (task->state == DownloadState::Queued)
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        for (auto& task : tasks) {
+            if (task->id != id) continue;
+            if (task->state == DownloadState::Done ||
+                task->state == DownloadState::Failed ||
+                task->state == DownloadState::Cancelled)
+                return;
+            task->cancelled.store(true);
+            // Persist right away, otherwise an exit before the worker notices
+            // would leave a stale queued record behind.
             task->state = DownloadState::Cancelled;
-        return;
+            changed = true;
+            break;
+        }
     }
+    if (changed) this->saveHistory();
 }
 
 void DownloadManager::clearFinished() {
@@ -519,7 +575,9 @@ std::vector<DownloadTask> DownloadManager::snapshot() const {
     std::lock_guard<std::mutex> lock(mutex);
     std::vector<DownloadTask> result;
     result.reserve(tasks.size());
-    for (const auto& task : tasks) {
+    // Newest first so the task just queued sits at the top of the list.
+    for (auto it = tasks.rbegin(); it != tasks.rend(); ++it) {
+        const auto& task = *it;
         DownloadTask info;
         info.id = task->id;
         info.name = task->name;

@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <functional>
 
+#include "cloud/ui/popup.hpp"
 #include "nxkit/ui/auto_tab_frame.hpp"
 
 using namespace brls::literals;
@@ -24,6 +25,11 @@ uint64_t nowMs() {
     return (uint64_t)duration_cast<milliseconds>(
                steady_clock::now().time_since_epoch())
         .count();
+}
+
+NVGcolor withAlpha(NVGcolor color, float alpha) {
+    color.a = alpha;
+    return color;
 }
 
 std::string formatBytes(uint64_t bytes) {
@@ -42,6 +48,28 @@ std::string formatBytes(uint64_t bytes) {
     return buf;
 }
 
+std::string formatDuration(uint64_t seconds) {
+    if (seconds < 1) seconds = 1;
+    std::string hourUnit = "cloud/download/hour"_i18n;
+    std::string minuteUnit = "cloud/download/minute"_i18n;
+    std::string secondUnit = "cloud/download/second"_i18n;
+
+    if (seconds >= 3600) {
+        std::string out =
+            std::to_string(seconds / 3600) + hourUnit;
+        uint64_t minutes = (seconds % 3600) / 60;
+        if (minutes > 0) out += std::to_string(minutes) + minuteUnit;
+        return out;
+    }
+    if (seconds >= 60) {
+        std::string out = std::to_string(seconds / 60) + minuteUnit;
+        uint64_t rest = seconds % 60;
+        if (rest > 0) out += std::to_string(rest) + secondUnit;
+        return out;
+    }
+    return std::to_string(seconds) + secondUnit;
+}
+
 bool isActive(DownloadState state) {
     return state == DownloadState::Queued ||
            state == DownloadState::Running;
@@ -53,9 +81,9 @@ NVGcolor stateColor(DownloadState state) {
         case DownloadState::Running:
             return theme["brls/accent"];
         case DownloadState::Done:
-            return nvgRGB(88, 199, 128);
+            return nvgRGB(72, 199, 132);
         case DownloadState::Failed:
-            return nvgRGB(232, 104, 104);
+            return nvgRGB(236, 96, 96);
         case DownloadState::Queued:
         case DownloadState::Cancelled:
         default:
@@ -74,8 +102,27 @@ std::string stateText(DownloadState state) {
     return "cloud/download/queued"_i18n;
 }
 
-/// Thin rounded progress track with an accent fill.
-class ThinBar : public brls::View {
+/// Labels measure to NaN width when their text is empty, which corrupts the
+/// whole row's layout, so empty labels are collapsed instead.
+void setLabelText(brls::Label* label, const std::string& text) {
+    label->setText(text);
+    label->setVisibility(text.empty() ? brls::Visibility::GONE
+                                      : brls::Visibility::VISIBLE);
+}
+
+/// Joins the non-empty parts with a middle dot separator.
+std::string joinMeta(const std::vector<std::string>& parts) {
+    std::string out;
+    for (const auto& part : parts) {
+        if (part.empty()) continue;
+        if (!out.empty()) out += "  ·  ";
+        out += part;
+    }
+    return out;
+}
+
+/// Rounded track with a gradient fill, sized by the caller.
+class ProgressBar : public brls::View {
 public:
     void setProgress(float value) {
         float next = std::min(1.0f, std::max(0.0f, value));
@@ -84,37 +131,118 @@ public:
         this->invalidate();
     }
 
+    void setTrack(NVGcolor color) { this->trackColor = color; }
+
+    void setFill(NVGcolor start, NVGcolor end) {
+        this->fillStart = start;
+        this->fillEnd = end;
+    }
+
     void draw(NVGcontext* vg, float x, float y, float width, float height,
               brls::Style style, brls::FrameContext* ctx) override {
         if (width <= 0 || height <= 0) return;
-        brls::Theme theme = brls::Application::getTheme();
-        float radius = height / 2.0f;
+        float radius = height * 0.5f;
 
         nvgBeginPath(vg);
         nvgRoundedRect(vg, x, y, width, height, radius);
-        nvgFillColor(vg, this->a(theme["cloud/border"]));
+        nvgFillColor(vg, this->trackColor);
         nvgFill(vg);
 
-        if (this->progress <= 0) return;
+        if (this->progress <= 0.0f) return;
         float fillWidth = std::max(height, width * this->progress);
+        NVGpaint paint = nvgLinearGradient(vg, x, y, x + width, y,
+                                          this->fillStart, this->fillEnd);
         nvgBeginPath(vg);
         nvgRoundedRect(vg, x, y, fillWidth, height, radius);
-        nvgFillColor(vg, this->a(theme["brls/accent"]));
+        nvgFillPaint(vg, paint);
         nvgFill(vg);
     }
 
 private:
-    float progress = 0;
+    float progress = 0.0f;
+    NVGcolor trackColor = nvgRGBA(255, 255, 255, 40);
+    NVGcolor fillStart = nvgRGB(255, 255, 255);
+    NVGcolor fillEnd = nvgRGBA(255, 255, 255, 215);
 };
 
-/// One download card. Highlight is drawn manually because a plain Box does
-/// not show focus on its own.
+/// Large outlined arrow used by the empty state.
+class EmptyArt : public brls::View {
+public:
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        if (width <= 0 || height <= 0) return;
+        brls::Theme theme = brls::Application::getTheme();
+        float cx = x + width * 0.5f;
+        float cy = y + height * 0.5f;
+
+        nvgBeginPath(vg);
+        nvgCircle(vg, cx, cy, 38);
+        nvgFillColor(vg, theme["cloud/surface"]);
+        nvgFill(vg);
+
+        nvgStrokeWidth(vg, 2.5f);
+        nvgStrokeColor(vg, withAlpha(theme["brls/accent"], 0.9f));
+        nvgLineCap(vg, NVG_ROUND);
+        nvgLineJoin(vg, NVG_ROUND);
+
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, cx, cy - 16);
+        nvgLineTo(vg, cx, cy + 6);
+        nvgStroke(vg);
+
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, cx - 9, cy - 4);
+        nvgLineTo(vg, cx, cy + 7);
+        nvgLineTo(vg, cx + 9, cy - 4);
+        nvgStroke(vg);
+
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, cx - 15, cy + 15);
+        nvgLineTo(vg, cx - 15, cy + 24);
+        nvgLineTo(vg, cx + 15, cy + 24);
+        nvgLineTo(vg, cx + 15, cy + 15);
+        nvgStroke(vg);
+    }
+};
+
+
+/// One line of "label  value" inside the details card.
+void addInfoRow(brls::Box* card, const std::string& key,
+                const std::string& value, NVGcolor color) {
+    brls::Theme theme = brls::Application::getTheme();
+
+    brls::Box* row = new brls::Box(brls::Axis::ROW);
+    row->setAlignItems(brls::AlignItems::CENTER);
+    row->setWidthPercentage(100);
+    row->setMarginTop(10);
+
+    brls::Label* label = new brls::Label();
+    label->setText(key);
+    label->setFontSize(12);
+    label->setHeight(18);
+    label->setWidth(80);
+    label->setTextColor(theme["cloud/text_secondary"]);
+    row->addView(label);
+
+    brls::Label* text = new brls::Label();
+    text->setText(value);
+    text->setFontSize(13);
+    text->setHeight(18);
+    text->setSingleLine(true);
+    text->setGrow(1);
+    text->setTextColor(color);
+    row->addView(text);
+
+    card->addView(row);
+}
+
+/// One task card. Highlight is drawn manually because a plain Box does not
+/// show focus on its own.
 class TaskCard : public brls::Box {
 public:
     TaskCard(const std::string& hint, std::function<void()> activate)
         : activate(std::move(activate)) {
         this->setAxis(brls::Axis::COLUMN);
-        this->setPadding(14, 18, 14, 18);
         this->setMarginBottom(10);
         this->setCornerRadius(16);
         this->setHighlightCornerRadius(16);
@@ -169,7 +297,6 @@ private:
 }  // namespace
 
 DownloadPage::~DownloadPage() {
-    *this->alive = false;
     if (this->timer) {
         this->timer->stop();
         delete this->timer;
@@ -185,26 +312,7 @@ DownloadPage::DownloadPage() {
     this->setPadding(24, 48, 20, 48);
     this->setBackgroundColor(theme["cloud/bg"]);
 
-    brls::Box* header = new brls::Box(brls::Axis::ROW);
-    header->setAlignItems(brls::AlignItems::CENTER);
-    header->setJustifyContent(brls::JustifyContent::FLEX_END);
-    header->setMarginTop(4);
-    header->setMarginBottom(12);
-
-    brls::Box* pill = new brls::Box(brls::Axis::ROW);
-    pill->setAlignItems(brls::AlignItems::CENTER);
-    pill->setHeight(30);
-    pill->setPadding(0, 14, 0, 14);
-    pill->setCornerRadius(15);
-    pill->setBackgroundColor(theme["cloud/surface_alt"]);
-
-    this->summaryLabel = new brls::Label();
-    this->summaryLabel->setFontSize(13);
-    this->summaryLabel->setTextColor(theme["cloud/text_secondary"]);
-    this->summaryLabel->setHeight(17);
-    pill->addView(this->summaryLabel);
-    header->addView(pill);
-    this->addView(header);
+    this->addView(this->buildSelectBar());
 
     brls::ScrollingFrame* scroll = new brls::ScrollingFrame();
     scroll->setGrow(1);
@@ -234,14 +342,40 @@ DownloadPage::DownloadPage() {
     this->refresh();
 }
 
+/// Slim bar shown only while multi-select is active; the selection count used
+/// to live in the removed summary card.
+brls::Box* DownloadPage::buildSelectBar() {
+    brls::Theme theme = brls::Application::getTheme();
+
+    brls::Box* bar = new brls::Box(brls::Axis::ROW);
+    bar->setAlignItems(brls::AlignItems::CENTER);
+    bar->setHeight(38);
+    bar->setPadding(0, 14, 0, 14);
+    bar->setCornerRadius(10);
+    bar->setMarginBottom(10);
+    bar->setBackgroundColor(theme["cloud/surface_alt"]);
+    bar->setVisibility(brls::Visibility::GONE);
+
+    this->selectText = new brls::Label();
+    this->selectText->setFontSize(13);
+    this->selectText->setHeight(18);
+    this->selectText->setTextColor(theme["cloud/text"]);
+    bar->addView(this->selectText);
+
+    this->selectBar = bar;
+    return bar;
+}
+
 void DownloadPage::refresh() {
     std::vector<DownloadTask> tasks = DownloadManager::instance().snapshot();
 
-    bool stale = tasks.size() != this->rows.size();
+    bool stale = !this->built || tasks.size() != this->rows.size();
     if (!stale) {
         for (size_t i = 0; i < tasks.size(); i++) {
-            if (tasks[i].id != this->rows[i].id ||
-                tasks[i].state != this->rows[i].state) {
+            const Row* row = nullptr;
+            for (const Row& candidate : this->rows)
+                if (candidate.id == tasks[i].id) row = &candidate;
+            if (!row || row->state != tasks[i].state) {
                 stale = true;
                 break;
             }
@@ -252,9 +386,10 @@ void DownloadPage::refresh() {
     if (stale) this->rebuild();
 
     uint64_t now = nowMs();
-    size_t count = std::min(this->latest.size(), this->rows.size());
-    for (size_t i = 0; i < count; i++)
-        this->updateRow(this->rows[i], this->latest[i], now);
+    for (Row& row : this->rows) {
+        const DownloadTask* task = this->findTask(row.id);
+        if (task) this->updateRow(row, *task, now);
+    }
     this->updateSummary();
     this->applyTabRoutes();
 
@@ -280,15 +415,89 @@ void DownloadPage::applyTabRoutes() {
         brls::FocusDirection::UP, tabItem);
 }
 
+brls::Box* DownloadPage::sectionHeader(const std::string& title, size_t count,
+                                       bool spaced,
+                                       brls::Label** summaryOut) {
+    brls::Theme theme = brls::Application::getTheme();
+
+    brls::Box* header = new brls::Box(brls::Axis::ROW);
+    header->setAlignItems(brls::AlignItems::CENTER);
+    header->setMarginTop(spaced ? 14 : 2);
+    header->setMarginBottom(10);
+    header->setMarginLeft(4);
+
+    brls::Box* mark = new brls::Box();
+    mark->setWidth(3);
+    mark->setHeight(14);
+    mark->setCornerRadius(2);
+    mark->setMarginRight(8);
+    mark->setBackgroundColor(theme["brls/accent"]);
+    header->addView(mark);
+
+    brls::Label* label = new brls::Label();
+    label->setText(title + "  " + std::to_string(count));
+    label->setFontSize(14);
+    label->setHeight(20);
+    label->setGrow(1);
+    label->setTextColor(theme["cloud/text"]);
+    header->addView(label);
+
+    if (summaryOut) {
+        brls::Label* summary = new brls::Label();
+        summary->setFontSize(12);
+        summary->setHeight(17);
+        summary->setMarginRight(6);
+        summary->setTextColor(theme["brls/accent"]);
+        summary->setVisibility(brls::Visibility::GONE);
+        header->addView(summary);
+        *summaryOut = summary;
+    }
+
+    return header;
+}
+
+void DownloadPage::buildEmptyState() {
+    brls::Theme theme = brls::Application::getTheme();
+
+    brls::Box* empty = new brls::Box(brls::Axis::COLUMN);
+    empty->setGrow(1);
+    empty->setAlignItems(brls::AlignItems::CENTER);
+    empty->setJustifyContent(brls::JustifyContent::CENTER);
+
+    EmptyArt* art = new EmptyArt();
+    art->setWidth(100);
+    art->setHeight(100);
+    art->setMarginBottom(18);
+    empty->addView(art);
+
+    brls::Label* title = new brls::Label();
+    title->setText("cloud/download/empty"_i18n);
+    title->setFontSize(19);
+    title->setTextColor(theme["cloud/text"]);
+    title->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+    title->setMarginBottom(8);
+    empty->addView(title);
+
+    brls::Label* hint = new brls::Label();
+    hint->setText("cloud/download/empty_hint"_i18n);
+    hint->setFontSize(13);
+    hint->setTextColor(theme["cloud/text_secondary"]);
+    hint->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+    empty->addView(hint);
+
+    this->listBox->addView(empty);
+}
+
 void DownloadPage::rebuild() {
     // Keep the highlight on the same task after a rebuild.
     uint64_t focusedId = 0;
     for (const Row& row : this->rows)
         if (row.card && row.card->isFocused()) focusedId = row.id;
 
-    brls::Theme theme = brls::Application::getTheme();
     this->listBox->clearViews();
     this->rows.clear();
+    this->activeSummary = nullptr;
+    this->built = true;
     uint64_t now = nowMs();
 
     // Forget selections of tasks that no longer exist.
@@ -299,124 +508,35 @@ void DownloadPage::rebuild() {
     if (this->latest.empty()) this->selecting = false;
 
     if (this->latest.empty()) {
-        brls::Box* empty = new brls::Box(brls::Axis::COLUMN);
-        empty->setGrow(1);
-        empty->setAlignItems(brls::AlignItems::CENTER);
-        empty->setJustifyContent(brls::JustifyContent::CENTER);
-
-        brls::Label* title = new brls::Label();
-        title->setText("cloud/download/empty"_i18n);
-        title->setFontSize(20);
-        title->setTextColor(theme["cloud/text_secondary"]);
-        title->setHorizontalAlign(brls::HorizontalAlign::CENTER);
-        title->setMarginBottom(8);
-        empty->addView(title);
-
-        brls::Label* hint = new brls::Label();
-        hint->setText("cloud/download/empty_hint"_i18n);
-        hint->setFontSize(14);
-        hint->setTextColor(theme["cloud/text_secondary"]);
-        hint->setHorizontalAlign(brls::HorizontalAlign::CENTER);
-        empty->addView(hint);
-        this->listBox->addView(empty);
+        this->buildEmptyState();
         return;
     }
 
-    Row* focusedRow = nullptr;
-
+    std::vector<const DownloadTask*> active;
+    std::vector<const DownloadTask*> finished;
     for (const auto& task : this->latest) {
-        uint64_t id = task.id;
-        bool active = isActive(task.state);
-        const std::string hint =
-            this->selecting ? "cloud/download/choose"_i18n
-                            : (active ? "cloud/download/cancel"_i18n
-                                      : "cloud/download/details"_i18n);
-        TaskCard* card = new TaskCard(hint, [this, id] {
-            this->runRowAction(id);
-        });
-
-        brls::Box* top = new brls::Box(brls::Axis::ROW);
-        top->setAlignItems(brls::AlignItems::CENTER);
-
-        brls::Label* check = new brls::Label();
-        check->setFontSize(15);
-        check->setHeight(20);
-        check->setMarginRight(10);
-        check->setTextColor(theme["brls/accent"]);
-        check->setVisibility(this->selecting ? brls::Visibility::VISIBLE
-                                             : brls::Visibility::GONE);
-        top->addView(check);
-
-        brls::Label* name = new brls::Label();
-        name->setText(task.name);
-        name->setFontSize(17);
-        name->setTextColor(theme["cloud/text"]);
-        name->setHeight(22);
-        name->setSingleLine(true);
-        name->setGrow(1);
-        top->addView(name);
-
-        brls::Label* status = new brls::Label();
-        status->setFontSize(13);
-        status->setHeight(18);
-        status->setMarginLeft(12);
-        top->addView(status);
-        card->addView(top);
-
-        ThinBar* bar = new ThinBar();
-        bar->setHeight(6);
-        bar->setMarginTop(10);
-        bar->setWidthPercentage(100);
-        card->addView(bar);
-
-        // Source tag + progress/error text.
-        brls::Box* meta = new brls::Box(brls::Axis::ROW);
-        meta->setAlignItems(brls::AlignItems::CENTER);
-        meta->setMarginTop(8);
-
-        if (!task.provider.empty()) {
-            brls::Box* badge = new brls::Box(brls::Axis::ROW);
-            badge->setAlignItems(brls::AlignItems::CENTER);
-            badge->setHeight(20);
-            badge->setPadding(0, 8, 0, 8);
-            badge->setCornerRadius(10);
-            badge->setMarginRight(10);
-            badge->setBackgroundColor(theme["cloud/surface_alt"]);
-
-            brls::Label* source = new brls::Label();
-            source->setText(task.provider);
-            source->setFontSize(11);
-            source->setTextColor(theme["cloud/text_secondary"]);
-            source->setHeight(15);
-            badge->addView(source);
-            meta->addView(badge);
-        }
-
-        brls::Label* detail = new brls::Label();
-        detail->setFontSize(13);
-        detail->setTextColor(theme["cloud/text_secondary"]);
-        detail->setHeight(18);
-        detail->setSingleLine(true);
-        detail->setGrow(1);
-        meta->addView(detail);
-        card->addView(meta);
-
-        this->listBox->addView(card);
-
-        Row row;
-        row.id = task.id;
-        row.card = card;
-        row.check = check;
-        row.name = name;
-        row.status = status;
-        row.detail = detail;
-        row.bar = bar;
-        row.state = task.state;
-        row.lastBytes = task.received;
-        row.lastMs = now;
-        this->rows.push_back(row);
+        if (isActive(task.state))
+            active.push_back(&task);
+        else
+            finished.push_back(&task);
     }
 
+    if (!active.empty()) {
+        this->listBox->addView(this->sectionHeader(
+            "cloud/download/section/active"_i18n, active.size(), false,
+            &this->activeSummary));
+        for (const DownloadTask* task : active)
+            this->listBox->addView(this->buildActiveCard(*task, now));
+    }
+    if (!finished.empty()) {
+        this->listBox->addView(this->sectionHeader(
+            "cloud/download/section/finished"_i18n, finished.size(),
+            !active.empty()));
+        for (const DownloadTask* task : finished)
+            this->listBox->addView(this->buildFinishedRow(*task, now));
+    }
+
+    Row* focusedRow = nullptr;
     for (Row& row : this->rows)
         if (row.id == focusedId) focusedRow = &row;
 
@@ -426,13 +546,198 @@ void DownloadPage::rebuild() {
         brls::Application::giveFocus(this->rows.front().card);
 }
 
+brls::Box* DownloadPage::buildActiveCard(const DownloadTask& task,
+                                         uint64_t now) {
+    brls::Theme theme = brls::Application::getTheme();
+
+    const std::string hint =
+        this->selecting ? "cloud/download/choose"_i18n
+                        : "cloud/download/details"_i18n;
+    TaskCard* card = new TaskCard(hint, [this, id = task.id] {
+        this->runRowAction(id);
+    });
+    card->setPadding(14, 18, 14, 18);
+
+    brls::Box* top = new brls::Box(brls::Axis::ROW);
+    top->setAlignItems(brls::AlignItems::CENTER);
+
+    brls::Label* check = new brls::Label();
+    check->setFontSize(15);
+    check->setHeight(20);
+    check->setMarginRight(10);
+    check->setTextColor(theme["brls/accent"]);
+    check->setVisibility(this->selecting ? brls::Visibility::VISIBLE
+                                         : brls::Visibility::GONE);
+    top->addView(check);
+
+    brls::Label* name = new brls::Label();
+    name->setText(task.name);
+    name->setFontSize(17);
+    name->setTextColor(theme["cloud/text"]);
+    name->setHeight(22);
+    name->setSingleLine(true);
+    name->setGrow(1);
+    top->addView(name);
+
+    brls::Label* headline = new brls::Label();
+    headline->setFontSize(21);
+    headline->setHeight(26);
+    headline->setMarginLeft(12);
+    headline->setTextColor(theme["brls/accent"]);
+    headline->setVisibility(brls::Visibility::GONE);
+    top->addView(headline);
+    card->addView(top);
+
+    ProgressBar* bar = new ProgressBar();
+    bar->setHeight(8);
+    bar->setMarginTop(10);
+    bar->setWidthPercentage(100);
+    bar->setTrack(theme["cloud/surface_alt"]);
+    bar->setFill(theme["brls/accent"],
+                 withAlpha(theme["brls/accent"], 0.55f));
+    card->addView(bar);
+
+    brls::Box* meta = new brls::Box(brls::Axis::ROW);
+    meta->setAlignItems(brls::AlignItems::CENTER);
+    meta->setMarginTop(8);
+
+    if (!task.provider.empty()) {
+        brls::Box* badge = new brls::Box(brls::Axis::ROW);
+        badge->setAlignItems(brls::AlignItems::CENTER);
+        badge->setHeight(20);
+        badge->setPadding(0, 8, 0, 8);
+        badge->setCornerRadius(10);
+        badge->setMarginRight(10);
+        badge->setBackgroundColor(theme["cloud/surface_alt"]);
+
+        brls::Label* source = new brls::Label();
+        source->setText(task.provider);
+        source->setFontSize(11);
+        source->setTextColor(theme["cloud/text_secondary"]);
+        source->setHeight(15);
+        badge->addView(source);
+        meta->addView(badge);
+    }
+
+    brls::Label* detail = new brls::Label();
+    detail->setFontSize(12.5f);
+    detail->setTextColor(theme["cloud/text_secondary"]);
+    detail->setHeight(18);
+    detail->setSingleLine(true);
+    detail->setGrow(1);
+    detail->setVisibility(brls::Visibility::GONE);
+    meta->addView(detail);
+    card->addView(meta);
+
+    Row row;
+    row.id = task.id;
+    row.card = card;
+    row.check = check;
+    row.name = name;
+    row.headline = headline;
+    row.detail = detail;
+    row.bar = bar;
+    row.state = task.state;
+    row.lastBytes = task.received;
+    row.lastMs = now;
+    this->rows.push_back(row);
+
+    return card;
+}
+
+brls::Box* DownloadPage::buildFinishedRow(const DownloadTask& task,
+                                          uint64_t now) {
+    brls::Theme theme = brls::Application::getTheme();
+
+    const std::string hint =
+        this->selecting ? "cloud/download/choose"_i18n
+                        : "cloud/download/details"_i18n;
+    TaskCard* card = new TaskCard(hint, [this, id = task.id] {
+        this->runRowAction(id);
+    });
+    card->setPadding(10, 18, 10, 18);
+
+    brls::Box* top = new brls::Box(brls::Axis::ROW);
+    top->setAlignItems(brls::AlignItems::CENTER);
+
+    brls::Label* check = new brls::Label();
+    check->setFontSize(15);
+    check->setHeight(20);
+    check->setMarginRight(8);
+    check->setTextColor(theme["brls/accent"]);
+    check->setVisibility(this->selecting ? brls::Visibility::VISIBLE
+                                         : brls::Visibility::GONE);
+    top->addView(check);
+
+    brls::Label* dot = new brls::Label();
+    dot->setText("●");
+    dot->setFontSize(10);
+    dot->setHeight(16);
+    dot->setMarginRight(8);
+    dot->setTextColor(stateColor(task.state));
+    top->addView(dot);
+
+    brls::Label* name = new brls::Label();
+    name->setText(task.name);
+    name->setFontSize(15);
+    name->setTextColor(theme["cloud/text"]);
+    name->setHeight(20);
+    name->setSingleLine(true);
+    name->setGrow(1);
+    top->addView(name);
+
+    brls::Label* headline = new brls::Label();
+    headline->setFontSize(12.5f);
+    headline->setHeight(18);
+    headline->setMarginLeft(12);
+    headline->setTextColor(stateColor(task.state));
+    headline->setVisibility(brls::Visibility::GONE);
+    top->addView(headline);
+
+    brls::Label* chevron = new brls::Label();
+    chevron->setText("›");
+    chevron->setFontSize(18);
+    chevron->setHeight(22);
+    chevron->setMarginLeft(8);
+    chevron->setTextColor(theme["cloud/text_secondary"]);
+    top->addView(chevron);
+    card->addView(top);
+
+    brls::Box* meta = new brls::Box(brls::Axis::ROW);
+    meta->setMarginTop(3);
+    meta->setMarginLeft(this->selecting ? 41 : 18);
+
+    brls::Label* detail = new brls::Label();
+    detail->setFontSize(12);
+    detail->setTextColor(theme["cloud/text_secondary"]);
+    detail->setHeight(16);
+    detail->setSingleLine(true);
+    detail->setGrow(1);
+    detail->setVisibility(brls::Visibility::GONE);
+    meta->addView(detail);
+    card->addView(meta);
+
+    Row row;
+    row.id = task.id;
+    row.card = card;
+    row.check = check;
+    row.name = name;
+    row.headline = headline;
+    row.detail = detail;
+    row.bar = nullptr;
+    row.state = task.state;
+    row.lastBytes = task.received;
+    row.lastMs = now;
+    this->rows.push_back(row);
+
+    return card;
+}
+
 void DownloadPage::updateRow(Row& row, const DownloadTask& task,
                              uint64_t now) {
     brls::Theme theme = brls::Application::getTheme();
 
     row.name->setText(task.name);
-    row.status->setText(stateText(task.state));
-    row.status->setTextColor(stateColor(task.state));
 
     if (row.check) {
         bool marked = this->isSelected(task.id);
@@ -441,80 +746,129 @@ void DownloadPage::updateRow(Row& row, const DownloadTask& task,
                                        : theme["cloud/text_secondary"]);
     }
 
-    ThinBar* bar = dynamic_cast<ThinBar*>(row.bar);
     float progress = 0.0f;
     if (task.total > 0)
         progress = (float)((double)task.received / (double)task.total);
     if (task.state == DownloadState::Done) progress = 1.0f;
-    if (bar) {
+    if (auto* bar = dynamic_cast<ProgressBar*>(row.bar))
         bar->setProgress(progress);
-        bar->setVisibility((task.state == DownloadState::Running ||
-                            task.state == DownloadState::Done)
-                               ? brls::Visibility::VISIBLE
-                               : brls::Visibility::GONE);
-    }
 
+    std::string headline;
     std::string detail;
+    NVGcolor headlineColor = stateColor(task.state);
+    bool detailIsError = false;
+
     switch (task.state) {
         case DownloadState::Queued:
-            detail = "cloud/download/queued"_i18n;
+            headline = stateText(task.state);
+            if (task.total > 0) detail = formatBytes(task.total);
             break;
+
         case DownloadState::Running: {
-            if (task.total > 0) {
-                int percent = (int)(progress * 100.0f);
-                if (percent > 100) percent = 100;
-                detail = std::to_string(percent) + "%  ·  " +
-                         formatBytes(task.received) + " / " +
-                         formatBytes(task.total);
-                if (now > row.lastMs && task.received >= row.lastBytes) {
-                    uint64_t speed =
-                        (task.received - row.lastBytes) * 1000 /
-                        (now - row.lastMs);
-                    if (speed > 0) detail += "  ·  " + formatBytes(speed) + "/s";
-                }
-            } else {
-                detail = formatBytes(task.received);
+            // Smooth the instantaneous rate so the number does not jump.
+            if (now > row.lastMs && task.received >= row.lastBytes) {
+                double instant = (double)(task.received - row.lastBytes) *
+                                 1000.0 / (double)(now - row.lastMs);
+                row.speed = row.speed <= 0.0
+                                ? instant
+                                : row.speed * 0.62 + instant * 0.38;
             }
             row.lastBytes = task.received;
             row.lastMs = now;
+
+            if (task.total > 0) {
+                int percent = (int)(progress * 100.0f);
+                if (percent > 100) percent = 100;
+                if (percent < 0) percent = 0;
+                headline = std::to_string(percent) + "%";
+                detail = formatBytes(task.received) + " / " +
+                         formatBytes(task.total);
+            } else {
+                detail = formatBytes(task.received);
+            }
+
+            std::string speedText;
+            std::string etaText;
+            if (row.speed >= 1.0) {
+                speedText = formatBytes((uint64_t)row.speed) + "/s";
+                if (task.total > task.received) {
+                    uint64_t remaining = task.total - task.received;
+                    etaText = "cloud/download/eta"_i18n + " " +
+                              formatDuration(
+                                  (uint64_t)((double)remaining / row.speed));
+                }
+            }
+            detail = joinMeta({detail, speedText, etaText});
             break;
         }
+
         case DownloadState::Done:
-            detail = task.path;
+            headline = stateText(task.state);
+            detail = joinMeta({formatBytes(task.total), task.path});
             break;
+
         case DownloadState::Failed:
+            headline = stateText(task.state);
             detail = task.error;
+            detailIsError = true;
             break;
+
         case DownloadState::Cancelled:
-            detail = task.path;
+            headline = stateText(task.state);
+            detail = joinMeta({formatBytes(task.total), task.path});
             break;
     }
-    row.detail->setText(detail);
-    row.detail->setTextColor(task.state == DownloadState::Failed
-                                 ? stateColor(task.state)
-                                 : theme["cloud/text_secondary"]);
+
+    setLabelText(row.headline, headline);
+    row.headline->setTextColor(headlineColor);
+    setLabelText(row.detail, detail);
+    row.detail->setTextColor(detailIsError ? stateColor(DownloadState::Failed)
+                                           : theme["cloud/text_secondary"]);
     row.state = task.state;
 }
 
 void DownloadPage::updateSummary() {
-    if (this->selecting) {
-        std::string text = "cloud/download/selected"_i18n + " " +
-                           std::to_string(this->selected.size()) + " / " +
-                           std::to_string(this->latest.size());
-        this->summaryLabel->setText(text);
-        return;
+    // Selection count lives in the slim bar above the list.
+    bool selecting = this->selecting;
+    if (this->selectBar) {
+        this->selectBar->setVisibility(selecting ? brls::Visibility::VISIBLE
+                                                 : brls::Visibility::GONE);
+        if (selecting && this->selectText)
+            this->selectText->setText(
+                "cloud/download/selected"_i18n + " " +
+                std::to_string(this->selected.size()) + " / " +
+                std::to_string(this->latest.size()));
     }
 
-    size_t active = 0;
-    for (const auto& task : this->latest)
-        if (isActive(task.state)) active++;
+    if (!this->activeSummary) return;
 
-    std::string text = std::to_string(this->latest.size()) + " " +
-                       "cloud/download/tasks"_i18n;
-    if (active > 0)
-        text += "  ·  " + std::to_string(active) + " " +
-                "cloud/download/running"_i18n;
-    this->summaryLabel->setText(text);
+    size_t active = 0;
+    uint64_t total = 0;
+    uint64_t received = 0;
+    for (const auto& task : this->latest) {
+        if (!isActive(task.state)) continue;
+        active++;
+        if (task.total > 0) {
+            total += task.total;
+            received += std::min(task.received, task.total);
+        }
+    }
+
+    double speed = 0.0;
+    for (const Row& row : this->rows) speed += row.speed;
+
+    std::string summary;
+    if (active > 0 && total > 0) {
+        int percent = (int)((double)received * 100.0 / (double)total);
+        if (percent > 100) percent = 100;
+        summary = std::to_string(percent) + "%";
+    }
+    std::string speedText =
+        speed >= 1.0 ? formatBytes((uint64_t)speed) + "/s" : std::string();
+    if (!speedText.empty())
+        summary = summary.empty() ? speedText : summary + "   " + speedText;
+
+    setLabelText(this->activeSummary, summary);
 }
 
 const DownloadTask* DownloadPage::findTask(uint64_t id) const {
@@ -552,36 +906,20 @@ void DownloadPage::runRowAction(uint64_t id) {
         this->toggleSelect(id);
         return;
     }
-    if (isActive(task->state))
-        this->confirmCancel(id);
-    else
-        this->showDetails(id);
-}
-
-void DownloadPage::confirmCancel(uint64_t id) {
-    brls::Dialog* dialog =
-        new brls::Dialog("cloud/download/cancel_confirm"_i18n);
-    dialog->addButton("cloud/download/keep"_i18n, [] {});
-    dialog->addButton("cloud/download/cancel"_i18n, [id] {
-        DownloadManager::instance().cancel(id);
-    });
-    dialog->setCancelable(true);
-    dialog->open();
+    this->showDetails(id);
 }
 
 void DownloadPage::confirmDeleteSelected() {
     std::vector<uint64_t> ids = this->selected;
     if (ids.empty()) return;
 
-    brls::Dialog* dialog = new brls::Dialog(
+    this->showConfirm(
+        "cloud/download/delete"_i18n,
         "cloud/download/delete_selected_confirm"_i18n + " (" +
-        std::to_string(ids.size()) + ")");
-    dialog->addButton("cloud/files/action/cancel"_i18n, [] {});
-    dialog->addButton("cloud/download/delete"_i18n, [ids] {
-        for (uint64_t id : ids) DownloadManager::instance().remove(id);
-    });
-    dialog->setCancelable(true);
-    dialog->open();
+            std::to_string(ids.size()) + ")",
+        "cloud/download/delete"_i18n, true, [ids] {
+            for (uint64_t id : ids) DownloadManager::instance().remove(id);
+        });
 }
 
 void DownloadPage::confirmClearFinished() {
@@ -593,14 +931,11 @@ void DownloadPage::confirmClearFinished() {
         }
     if (!anyFinished) return;
 
-    brls::Dialog* dialog =
-        new brls::Dialog("cloud/download/clear_confirm"_i18n);
-    dialog->addButton("cloud/files/action/cancel"_i18n, [] {});
-    dialog->addButton("cloud/download/clear"_i18n, [] {
-        DownloadManager::instance().clearFinished();
-    });
-    dialog->setCancelable(true);
-    dialog->open();
+    this->showConfirm("cloud/download/clear"_i18n,
+                      "cloud/download/clear_confirm"_i18n,
+                      "cloud/download/clear"_i18n, false, [] {
+                          DownloadManager::instance().clearFinished();
+                      });
 }
 
 brls::View* DownloadPage::activeTabItem() {
@@ -615,39 +950,160 @@ brls::View* DownloadPage::activeTabItem() {
     return nullptr;
 }
 
+void DownloadPage::showConfirm(const std::string& title,
+                               const std::string& message,
+                               const std::string& confirmText, bool danger,
+                               std::function<void()> onConfirm) {
+    presentConfirm(title, message, confirmText, danger, std::move(onConfirm));
+}
+
 void DownloadPage::showDetails(uint64_t id) {
     const DownloadTask* found = this->findTask(id);
     if (!found) return;
     DownloadTask task = *found;
 
-    std::string message = task.name + "\n\n";
-    message += "cloud/download/source"_i18n + ": " +
-               (task.provider.empty() ? std::string("-") : task.provider) +
-               "\n";
-    message += "cloud/download/status"_i18n + ": " + stateText(task.state) +
-               "\n";
-    if (!task.path.empty())
-        message += "cloud/download/path"_i18n + ": " + task.path + "\n";
-    if (task.total > 0)
-        message += "cloud/download/size"_i18n + ": " +
-                   formatBytes(task.received) + " / " +
-                   formatBytes(task.total) + "\n";
-    if (!task.error.empty())
-        message += "cloud/download/error"_i18n + ": " + task.error;
+    brls::Theme theme = brls::Application::getTheme();
+    NVGcolor accent = theme["brls/accent"];
 
-    brls::Dialog* dialog = new brls::Dialog(message);
-    if (task.retryable && (task.state == DownloadState::Failed ||
-                           task.state == DownloadState::Cancelled)) {
-        dialog->addButton("cloud/download/retry"_i18n, [id] {
+    brls::Box* card = makePopupCard(58);
+
+    // Title and state pill.
+    brls::Box* header = new brls::Box(brls::Axis::ROW);
+    header->setAlignItems(brls::AlignItems::FLEX_START);
+    header->setWidthPercentage(100);
+
+    brls::Label* title = new brls::Label();
+    title->setText(task.name);
+    title->setFontSize(19);
+    title->setTextColor(theme["cloud/text"]);
+    title->setGrow(1);
+    header->addView(title);
+
+    brls::Box* pill = new brls::Box(brls::Axis::ROW);
+    pill->setAlignItems(brls::AlignItems::CENTER);
+    pill->setHeight(22);
+    pill->setPadding(0, 9, 0, 9);
+    pill->setMarginLeft(12);
+    pill->setCornerRadius(11);
+    pill->setBackgroundColor(withAlpha(stateColor(task.state), 0.14f));
+
+    brls::Label* state = new brls::Label();
+    state->setText(stateText(task.state));
+    state->setFontSize(11.5f);
+    state->setHeight(16);
+    state->setTextColor(stateColor(task.state));
+    pill->addView(state);
+    header->addView(pill);
+    card->addView(header);
+
+    if (!task.provider.empty()) {
+        brls::Label* provider = new brls::Label();
+        provider->setText(task.provider);
+        provider->setFontSize(12);
+        provider->setHeight(18);
+        provider->setMarginTop(6);
+        provider->setTextColor(theme["cloud/text_secondary"]);
+        card->addView(provider);
+    }
+
+    // Progress, using the same bar as the task cards.
+    if (task.total > 0) {
+        float progress = (float)((double)task.received / (double)task.total);
+        if (task.state == DownloadState::Done) progress = 1.0f;
+
+        ProgressBar* bar = new ProgressBar();
+        bar->setHeight(6);
+        bar->setMarginTop(16);
+        bar->setWidthPercentage(100);
+        bar->setTrack(theme["cloud/surface_alt"]);
+        NVGcolor barColor = (task.state == DownloadState::Running ||
+                             task.state == DownloadState::Queued)
+                                ? accent
+                                : stateColor(task.state);
+        bar->setFill(barColor, withAlpha(barColor, 0.55f));
+        bar->setProgress(progress);
+        card->addView(bar);
+
+        brls::Box* sizeRow = new brls::Box(brls::Axis::ROW);
+        sizeRow->setAlignItems(brls::AlignItems::CENTER);
+        sizeRow->setWidthPercentage(100);
+        sizeRow->setMarginTop(8);
+
+        brls::Label* size = new brls::Label();
+        size->setText(formatBytes(task.received) + " / " +
+                      formatBytes(task.total));
+        size->setFontSize(12);
+        size->setHeight(18);
+        size->setGrow(1);
+        size->setTextColor(theme["cloud/text_secondary"]);
+        sizeRow->addView(size);
+
+        brls::Label* percent = new brls::Label();
+        percent->setText(std::to_string((int)(progress * 100.0f)) + "%");
+        percent->setFontSize(12);
+        percent->setHeight(18);
+        percent->setTextColor(stateColor(task.state));
+        sizeRow->addView(percent);
+        card->addView(sizeRow);
+    }
+
+    if (!task.path.empty())
+        addInfoRow(card, "cloud/download/path"_i18n, task.path,
+                   theme["cloud/text"]);
+    if (!task.error.empty())
+        addInfoRow(card, "cloud/download/error"_i18n, task.error,
+                   stateColor(DownloadState::Failed));
+
+    // Divider then the actions.
+    brls::Box* divider = new brls::Box();
+    divider->setHeight(1);
+    divider->setWidthPercentage(100);
+    divider->setMarginTop(16);
+    divider->setBackgroundColor(theme["cloud/border"]);
+    card->addView(divider);
+
+    brls::Box* actions = new brls::Box(brls::Axis::ROW);
+    actions->setAlignItems(brls::AlignItems::CENTER);
+    actions->setJustifyContent(brls::JustifyContent::FLEX_END);
+    actions->setWidthPercentage(100);
+    actions->setMarginTop(16);
+
+    PillButton* close =
+        new PillButton("cloud/download/close"_i18n, false, [] {
+            brls::Application::popActivity();
+        });
+    actions->addView(close);
+
+    PillButton* remove =
+        new PillButton("cloud/download/delete_record"_i18n, true, [id] {
+            DownloadManager::instance().remove(id);
+            brls::Application::popActivity();
+        });
+    actions->addView(remove);
+
+    PillButton* primary = nullptr;
+    if (isActive(task.state)) {
+        primary = new PillButton("cloud/download/cancel"_i18n, false, [id] {
+            DownloadManager::instance().cancel(id);
+            brls::Application::popActivity();
+        });
+    } else if (task.retryable && (task.state == DownloadState::Failed ||
+                                  task.state == DownloadState::Cancelled)) {
+        primary = new PillButton("cloud/download/retry"_i18n, false, [id] {
             DownloadManager::instance().retry(id);
+            brls::Application::popActivity();
         });
     }
-    dialog->addButton("cloud/download/delete_record"_i18n, [id] {
-        DownloadManager::instance().remove(id);
-    });
-    dialog->addButton("cloud/download/close"_i18n, [] {});
-    dialog->setCancelable(true);
-    dialog->open();
+
+    if (primary) {
+        actions->addView(primary);
+        primary->dropTrailingMargin();
+    } else {
+        remove->dropTrailingMargin();
+    }
+
+    card->addView(actions);
+    presentPopup(card, primary ? (brls::View*)primary : (brls::View*)close);
 }
 
 }  // namespace cloud

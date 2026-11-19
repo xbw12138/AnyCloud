@@ -137,6 +137,7 @@ void BaiduDrive::logout() {
     {
         std::lock_guard<std::mutex> lock(cookieMutex);
         http.setCookie("");
+        bdstoken.clear();
         fsIds.clear();
     }
     nxkit::AuthStore::instance().remove("cloud.baidu.cookie");
@@ -149,12 +150,59 @@ void BaiduDrive::saveCookie() {
     nxkit::AuthStore::instance().set("cloud.baidu.cookie", http.cookie());
 }
 
+nxkit::Query BaiduDrive::panQuery(nxkit::Query query) const {
+    std::lock_guard<std::mutex> lock(cookieMutex);
+    if (!bdstoken.empty()) query.emplace_back("bdstoken", bdstoken);
+    return query;
+}
+
+void BaiduDrive::ensureBdstoken(
+    std::function<void(const std::string& token)> next) {
+    std::string cached;
+    {
+        std::lock_guard<std::mutex> lock(cookieMutex);
+        cached = bdstoken;
+    }
+    // Call back outside the lock: panQuery() takes the same mutex.
+    if (!cached.empty()) return next(cached);
+
+    http.getAsync(
+        std::string(kPanBase) + "/api/gettemplatevariable",
+        {{"fields", "[\"bdstoken\"]"},
+         {"clienttype", "0"},
+         {"app_id", kPanAppId},
+         {"web", "1"}},
+        [this, next](const nxkit::HttpResult& result) {
+            std::string token;
+            if (result.ok) {
+                json root = result.json();
+                if (root.contains("result") && root["result"].is_object())
+                    token = root["result"].value("bdstoken", std::string());
+            }
+            if (!token.empty()) {
+                std::lock_guard<std::mutex> lock(cookieMutex);
+                bdstoken = token;
+            }
+            next(token);
+        },
+        10000);
+}
+
 void BaiduDrive::mergeResponseCookies(const nxkit::HttpResult& result) {
     if (result.cookies.empty()) return;
+    // A cleared cookie arrives with an empty value; writing that into the jar
+    // would wipe a session that is still valid.
+    std::map<std::string, std::string> fresh;
+    for (const auto& cookie : result.cookies) {
+        if (cookie.second.empty() || cookie.second == "deleted") continue;
+        fresh[cookie.first] = cookie.second;
+    }
+    if (fresh.empty()) return;
+
     std::string merged;
     {
         std::lock_guard<std::mutex> lock(cookieMutex);
-        merged = nxkit::mergeCookies(http.cookie(), result.cookies);
+        merged = nxkit::mergeCookies(http.cookie(), fresh);
         if (merged == http.cookie()) return;
         http.setCookie(merged);
     }
@@ -338,20 +386,24 @@ void BaiduDrive::accountInfo(
                 nxkit::AuthStore::instance().set("cloud.baidu.nickname",
                                                  info.nickname);
 
-            this->http.getAsync(
-                std::string(kPanBase) + "/api/quota",
-                {{"checkfree", "1"}, {"checkexpire", "1"}},
-                [callback, info](const nxkit::HttpResult& quota) mutable {
-                    if (quota.ok) {
-                        json q = quota.json();
-                        if (q.value("errno", -1) == 0) {
-                            info.totalCapacity =
-                                numberUInt(q.value("total", json(0)));
-                            info.usedCapacity =
-                                numberUInt(q.value("used", json(0)));
-                        }
-                    }
-                    callback(info, "");
+            this->ensureBdstoken(
+                [this, callback, info](const std::string&) mutable {
+                    this->http.getAsync(
+                        std::string(kPanBase) + "/api/quota",
+                        this->panQuery(
+                            {{"checkfree", "1"}, {"checkexpire", "1"}}),
+                        [callback, info](const nxkit::HttpResult& quota) mutable {
+                            if (quota.ok) {
+                                json q = quota.json();
+                                if (q.value("errno", -1) == 0) {
+                                    info.totalCapacity =
+                                        numberUInt(q.value("total", json(0)));
+                                    info.usedCapacity =
+                                        numberUInt(q.value("used", json(0)));
+                                }
+                            }
+                            callback(info, "");
+                        });
                 });
         });
 }
@@ -365,9 +417,11 @@ void BaiduDrive::listFiles(
     std::function<void(const std::vector<DriveFile>&, int,
                        const std::string&)> callback) {
     std::string dir = dirId.empty() ? "/" : dirId;
-    http.getAsync(
+    this->ensureBdstoken([this, dir, page, pageSize, callback](
+                             const std::string&) {
+    this->http.getAsync(
         std::string(kPanBase) + "/api/list",
-        {{"dir", dir},
+        this->panQuery({{"dir", dir},
          {"order", "name"},
          {"desc", "0"},
          {"showempty", "0"},
@@ -377,13 +431,19 @@ void BaiduDrive::listFiles(
          {"channel", "chunlei"},
          {"app_id", kPanAppId},
          {"clienttype", "0"},
-         {"thumb", "1"}},
+         {"thumb", "1"}}),
         [this, callback, page, pageSize](const nxkit::HttpResult& result) {
             this->mergeResponseCookies(result);
             if (!result.ok) return callback({}, 0, result.error);
             json root = result.json();
-            if (root.value("errno", -1) != 0)
-                return callback({}, 0, "baidu: list failed");
+            if (root.value("errno", -1) != 0) {
+                // Keep the server wording: "未登录" is what tells the UI the
+                // session expired instead of showing a generic failure.
+                std::string message = root.value("errmsg", std::string());
+                return callback({}, 0, message.empty()
+                                            ? "baidu: list failed"
+                                            : "baidu: " + message);
+            }
 
             std::vector<DriveFile> files;
             if (root.contains("list") && root["list"].is_array()) {
@@ -439,6 +499,7 @@ void BaiduDrive::listFiles(
                 total = (page - 1) * pageSize + (int)files.size();
             callback(files, total, "");
         });
+    });
 }
 
 int64_t BaiduDrive::lookupFsId(const std::string& path) {
@@ -449,16 +510,16 @@ int64_t BaiduDrive::lookupFsId(const std::string& path) {
     }
     nxkit::HttpResult result = http.get(
         std::string(kPanBase) + "/api/list",
-        {{"dir", parentOf(path)},
-         {"order", "name"},
-         {"desc", "0"},
-         {"showempty", "0"},
-         {"web", "1"},
-         {"page", "1"},
-         {"num", "1000"},
-         {"channel", "chunlei"},
-         {"app_id", kPanAppId},
-         {"clienttype", "0"}});
+        panQuery({{"dir", parentOf(path)},
+                  {"order", "name"},
+                  {"desc", "0"},
+                  {"showempty", "0"},
+                  {"web", "1"},
+                  {"page", "1"},
+                  {"num", "1000"},
+                  {"channel", "chunlei"},
+                  {"app_id", kPanAppId},
+                  {"clienttype", "0"}}));
     if (!result.ok) return 0;
     json root = result.json();
     if (root.value("errno", -1) != 0 || !root.contains("list")) return 0;
@@ -555,14 +616,23 @@ void BaiduDrive::requestDownloadUrl(
     pcs.setCookie(cookie);
     pcs.postAsync(std::string(kPcsBase) + "/rest/2.0/pcs/file", query, {},
                   [this, callback](const nxkit::HttpResult& result) {
-                      this->mergeResponseCookies(result);
+                      // Do not merge cookies here: PCS answers with its own
+                      // cookie scope, and writing it into the web jar overwrote
+                      // BDUSS, which made every later pan.baidu.com call fail
+                      // with 400 "未登录" (playing a video broke the session).
                       if (!result.ok) return callback("", "", result.error);
                       json root = json::parse(result.body, nullptr, false);
                       if (root.is_discarded())
                           return callback("", "", "baidu: bad download response");
                       if (root.contains("errno") &&
-                          root.value("errno", 0) != 0)
-                          return callback("", "", "baidu: download request failed");
+                          root.value("errno", 0) != 0) {
+                          std::string message =
+                              root.value("errmsg", std::string());
+                          return callback("", "",
+                                          message.empty()
+                                              ? "baidu: download request failed"
+                                              : "baidu: " + message);
+                      }
                       std::string url;
                       if (root.contains("urls")) url = extractUrl(root["urls"]);
                       if (url.empty() && root.contains("dlink"))
@@ -589,11 +659,11 @@ void BaiduDrive::videoStreams(
 void BaiduDrive::makeDir(const std::string& parentId, const std::string& name,
                          SimpleCallback callback) {
     http.postAsync(std::string(kPanBase) + "/api/create",
-                   {{"a", "commit"},
-                    {"channel", "chunlei"},
-                    {"web", "1"},
-                    {"app_id", kPanAppId},
-                    {"clienttype", "0"}},
+                   panQuery({{"a", "commit"},
+                             {"channel", "chunlei"},
+                             {"web", "1"},
+                             {"app_id", kPanAppId},
+                             {"clienttype", "0"}}),
                    {{"path", joinPath(parentId, name)},
                     {"isdir", "1"},
                     {"block_list", "[]"}},
@@ -616,13 +686,13 @@ void BaiduDrive::rename(const std::string& fileId, const std::string& newName,
         json item = {{"id", fsId}, {"path", fileId}, {"newname", newName}};
         nxkit::HttpResult result = http.post(
             std::string(kPanBase) + "/api/filemanager",
-            {{"opera", "rename"},
-             {"async", "2"},
-             {"onnest", "fail"},
-             {"channel", "chunlei"},
-             {"web", "1"},
-             {"app_id", kPanAppId},
-             {"clienttype", "0"}},
+            panQuery({{"opera", "rename"},
+                      {"async", "2"},
+                      {"onnest", "fail"},
+                      {"channel", "chunlei"},
+                      {"web", "1"},
+                      {"app_id", kPanAppId},
+                      {"clienttype", "0"}}),
             {{"filelist", json::array({item}).dump()}});
         std::string error;
         if (!result.ok)
@@ -641,13 +711,13 @@ void BaiduDrive::remove(const std::vector<std::string>& fileIds,
     json list = json::array();
     for (const auto& path : fileIds) list.push_back({{"path", path}});
     http.postAsync(std::string(kPanBase) + "/api/filemanager",
-                   {{"opera", "delete"},
-                    {"async", "2"},
-                    {"onnest", "fail"},
-                    {"channel", "chunlei"},
-                    {"web", "1"},
-                    {"app_id", kPanAppId},
-                    {"clienttype", "0"}},
+                   panQuery({{"opera", "delete"},
+                             {"async", "2"},
+                             {"onnest", "fail"},
+                             {"channel", "chunlei"},
+                             {"web", "1"},
+                             {"app_id", kPanAppId},
+                             {"clienttype", "0"}}),
                    {{"filelist", list.dump()}},
                    [callback](const nxkit::HttpResult& result) {
                        if (!result.ok) return callback(result.error);
@@ -666,13 +736,13 @@ void BaiduDrive::move(const std::vector<std::string>& fileIds,
                         {"dest", targetDirId},
                         {"newname", baseName(path)}});
     http.postAsync(std::string(kPanBase) + "/api/filemanager",
-                   {{"opera", "move"},
-                    {"async", "2"},
-                    {"onnest", "fail"},
-                    {"channel", "chunlei"},
-                    {"web", "1"},
-                    {"app_id", kPanAppId},
-                    {"clienttype", "0"}},
+                   panQuery({{"opera", "move"},
+                             {"async", "2"},
+                             {"onnest", "fail"},
+                             {"channel", "chunlei"},
+                             {"web", "1"},
+                             {"app_id", kPanAppId},
+                             {"clienttype", "0"}}),
                    {{"filelist", list.dump()}},
                    [callback](const nxkit::HttpResult& result) {
                        if (!result.ok) return callback(result.error);

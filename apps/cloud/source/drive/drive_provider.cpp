@@ -5,6 +5,7 @@
 #include "cloud/drive/drive_provider.hpp"
 
 #include <algorithm>
+#include <cctype>
 
 namespace cloud {
 
@@ -22,6 +23,23 @@ bool hasExtension(const std::string& name, std::initializer_list<const char*> ex
 }
 
 }  // namespace
+
+bool isAuthError(const std::string& error) {
+    if (error.empty()) return false;
+    if (error.find("未登录") != std::string::npos) return true;
+
+    std::string lower = error;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+    static const char* kMarkers[] = {
+        "not logged in", "not login", "unauthorized", "401",
+        "token expired",   "session expired", "invalid token",
+    };
+    for (const char* marker : kMarkers) {
+        if (lower.find(marker) != std::string::npos) return true;
+    }
+    return false;
+}
 
 MediaKind DriveFile::mediaKind() const {
     if (isDir) return MediaKind::None;

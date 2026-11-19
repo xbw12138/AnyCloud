@@ -21,7 +21,10 @@
     "scanned": "已扫码，请在手机上确认",
     "expired": "二维码已过期，请点击刷新",
     "failed": "获取二维码失败，请重试",
-    "success": "登录成功"
+    "success": "登录成功",
+    "session_expired": "登录已失效",
+    "session_expired_desc": "账号登录状态已过期，请重新扫码登录。",
+    "relogin": "重新登录"
   },
   "files": {
     "root": "全部文件",
@@ -85,7 +88,6 @@
     "empty": "暂无下载任务",
     "empty_hint": "在文件列表按 X，选择「下载到本机…」",
     "clear": "清除已结束",
-    "tasks": "个任务",
     "started": "已加入下载队列",
     "cancel": "取消",
     "queued": "等待中",
@@ -97,6 +99,14 @@
     "choose": "选择",
     "selected": "已选",
     "details": "详情",
+    "section": {
+      "active": "进行中",
+      "finished": "已结束"
+    },
+    "eta": "剩余",
+    "hour": "小时",
+    "minute": "分",
+    "second": "秒",
     "retry": "重试",
     "close": "关闭",
     "keep": "保留",
@@ -109,8 +119,7 @@
     "delete_record": "删除记录",
     "delete_confirm": "删除这条下载记录？（已下载的文件会保留）",
     "delete_selected_confirm": "删除选中的下载记录？",
-    "clear_confirm": "清除所有已结束的记录？",
-    "cancel_confirm": "取消这个下载？"
+    "clear_confirm": "清除所有已结束的记录？"
   },
   "soon": {
     "title": "即将上线",

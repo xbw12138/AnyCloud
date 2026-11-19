@@ -247,6 +247,13 @@ PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
     this->setFocusable(true);
     this->setHideHighlight(true);
 
+#ifdef __SWITCH__
+    // Report the console as playing media, otherwise the screen dims and the
+    // system sleep timer eventually kicks in while the video keeps playing.
+    brls::Application::getPlatform()->disableScreenDimming(
+        true, "media playback", "cloud");
+#endif
+
 #ifdef NXKIT_WITH_MPV
     this->mpvAvailable = true;
 #endif
@@ -492,6 +499,10 @@ PlayerPage::~PlayerPage() {
         this->osdTimer = 0;
     }
     this->savePosition();
+#ifdef __SWITCH__
+    brls::Application::getPlatform()->disableScreenDimming(
+        false, "media playback", "cloud");
+#endif
 #ifdef NXKIT_WITH_MPV
     auto& mpv = nxkit::MPVCore::instance();
     mpv.getEvent()->unsubscribe(this->eventSub);
@@ -1310,9 +1321,13 @@ void PlayerPage::draw(NVGcontext* vg, float x, float y, float width,
 #ifdef NXKIT_WITH_MPV
     if (!this->isAudio) {
         auto& mpv = nxkit::MPVCore::instance();
+        // Layout coordinates are content (dp) units: hand the whole content
+        // area over, not the framebuffer size. Docked mode runs at a 1.5 scale
+        // factor, and mixing pixels in here stretched the video quad past the
+        // screen so the picture was cropped.
         if (!mpv.isStopped())
-            mpv.draw(brls::Rect(0, 0, (float)brls::Application::windowWidth,
-                                (float)brls::Application::windowHeight));
+            mpv.draw(brls::Rect(0, 0, (float)brls::Application::contentWidth,
+                                (float)brls::Application::contentHeight));
     }
 #endif
     brls::Box::draw(vg, x, y, width, height, style, ctx);

@@ -21,7 +21,10 @@
     "scanned": "Scanned, confirm on your phone",
     "expired": "QR code expired, tap refresh",
     "failed": "Could not fetch the QR code, try again",
-    "success": "Signed in"
+    "success": "Signed in",
+    "session_expired": "Session expired",
+    "session_expired_desc": "Your sign-in has expired. Scan the QR code to sign in again.",
+    "relogin": "Sign in again"
   },
   "files": {
     "root": "All files",
@@ -85,7 +88,6 @@
     "empty": "No download tasks",
     "empty_hint": "Press X on a file and choose “Download to device…”",
     "clear": "Clear finished",
-    "tasks": "tasks",
     "started": "Added to the download queue",
     "cancel": "Cancel",
     "queued": "Queued",
@@ -97,6 +99,14 @@
     "choose": "Choose",
     "selected": "Selected",
     "details": "Details",
+    "section": {
+      "active": "Active",
+      "finished": "Finished"
+    },
+    "eta": "ETA",
+    "hour": "h",
+    "minute": "m",
+    "second": "s",
     "retry": "Retry",
     "close": "Close",
     "keep": "Keep",
@@ -109,8 +119,7 @@
     "delete_record": "Remove record",
     "delete_confirm": "Delete this download record? (Downloaded files are kept)",
     "delete_selected_confirm": "Delete the selected download records?",
-    "clear_confirm": "Clear all finished records?",
-    "cancel_confirm": "Cancel this download?"
+    "clear_confirm": "Clear all finished records?"
   },
   "soon": {
     "title": "Coming soon",

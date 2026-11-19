@@ -29,6 +29,7 @@ namespace brls
 {
 
 static AppletHookCookie applet_hook_cookie;
+
 static void on_applet_hook(AppletHookType hook, void* arg)
 {
     SwitchPlatform* platform = (SwitchPlatform*)arg;
@@ -43,11 +44,13 @@ static void on_applet_hook(AppletHookType hook, void* arg)
             {
                 case AppletFocusState_InFocus:
                     brls::Logger::info("AppletFocusState_InFocus");
+                    brls::Application::setWindowFocused(true);
                     brls::Application::getWindowFocusChangedEvent()->fire(true);
                     break;
                 case AppletFocusState_OutOfFocus:
                 case AppletFocusState_Background:
                     brls::Logger::info("AppletFocusState_OutOfFocus");
+                    brls::Application::setWindowFocused(false);
                     brls::Application::getWindowFocusChangedEvent()->fire(false);
                     break;
                 default:
@@ -226,6 +229,9 @@ std::string SwitchPlatform::getName()
 
 bool SwitchPlatform::mainLoopIteration()
 {
+    // Rendering is skipped while unfocused, so sleep instead of spinning.
+    if (!brls::Application::isWindowFocused())
+        svcSleepThread(100000000ULL);
     return appletMainLoop();
 }
 

@@ -1466,6 +1466,19 @@ void FileListPage::applyFiles(const std::vector<DriveFile>& files, int total,
                               bool firstPage, const std::string& error) {
     auto* source = (FileListDataSource*)this->dataSource;
     if (!error.empty()) {
+        if (firstPage && isAuthError(error)) {
+            // Stored credentials expired: offer a direct path back to login.
+            this->showErrorState("cloud/login/session_expired"_i18n);
+            brls::Dialog* dialog =
+                new brls::Dialog("cloud/login/session_expired_desc"_i18n);
+            dialog->addButton("cloud/files/action/cancel"_i18n, []() {});
+            dialog->addButton("cloud/login/relogin"_i18n, []() {
+                brls::Application::pushActivity(new LoginPage());
+            });
+            dialog->setCancelable(true);
+            dialog->open();
+            return;
+        }
         if (firstPage)
             this->showErrorState(error);
         else
