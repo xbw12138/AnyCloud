@@ -22,7 +22,7 @@ project(nsp_forwarder)
 set(FORWARDER_TITLEID "010FF000FFFF0103")
 set(FORWARDER_NAME "AnyCloud")
 set(FORWARDER_AUTHOR "xbw12138")
-set(FORWARDER_VERSION "1.0.0")
+set(FORWARDER_VERSION "1.0.1")
 set(FORWARDER_ICON "${CMAKE_SOURCE_DIR}/resources/img/cloud-icon.jpg")
 set(FORWARDER_NPDM "${CMAKE_CURRENT_SOURCE_DIR}/forwarder.json")
 # The NSP is dropped into the app's resource tree so it gets embedded in the
