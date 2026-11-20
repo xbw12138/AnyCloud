@@ -40,6 +40,7 @@ nxkit_add_app(cloud
         SOURCES
         source/main.cpp
         source/main_activity.cpp
+        source/update_check.cpp
         source/drive/aliyun_drive.cpp
         source/drive/baidu_drive.cpp
         source/drive/drive115.cpp

@@ -201,6 +201,8 @@
     "desktop": "Add to home menu",
     "desktop_warn": "Installing a home-menu icon may risk a ban. Please confirm again.",
     "ok": "OK",
+    "check_update": "Check for updates",
+    "checking": "Checking…",
     "refreshing": "Refreshing…",
     "features": "Features",
     "features_title": "Features",
@@ -279,5 +281,11 @@
     "about_follow_name": "爱柯基",
     "about_follow_id": "Douyin ID: 40054844563",
     "about_follow_hint": "Scan in Douyin for updates and tips"
+  },
+  "update": {
+    "found": "New version available",
+    "hint": "Update from the App Store, then restart the app",
+    "up_to_date": "You are up to date",
+    "failed": "Update check failed:"
   }
 }

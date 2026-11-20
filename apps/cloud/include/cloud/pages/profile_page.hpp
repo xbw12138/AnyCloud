@@ -45,6 +45,7 @@ private:
     void logout();
     void openProviderMenu();
     void installDesktopIcon();
+    void checkUpdate();
 
     std::shared_ptr<bool> alive = std::make_shared<bool>(true);
 
@@ -61,9 +62,11 @@ private:
     brls::Box* switchButton = nullptr;
     ActionTile* accountTile = nullptr;
     ActionTile* desktopTile = nullptr;
+    ActionTile* updateTile = nullptr;
 
     bool loggedIn = false;
     bool refreshing = false;
+    bool checkingUpdate = false;
     /// Bumped per account request so late replies and the watchdog can be told
     /// apart from the current one.
     uint64_t accountRequest = 0;

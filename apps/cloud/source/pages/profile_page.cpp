@@ -13,6 +13,7 @@
 #include "cloud/pages/http_log_page.hpp"
 #include "cloud/pages/info_page.hpp"
 #include "cloud/pages/login_page.hpp"
+#include "cloud/update_check.hpp"
 #include "nxkit/http_client.hpp"
 
 #ifndef NXKIT_APP_VERSION
@@ -447,6 +448,17 @@ void ProfilePage::build() {
     logTile->setGrow(1);
     tools->addView(logTile);
 
+    brls::Box* updateGap = new brls::Box();
+    updateGap->setWidth(16);
+    updateGap->setHeight(1);
+    tools->addView(updateGap);
+
+    this->updateTile = new ActionTile("cloud/profile/check_update"_i18n,
+                                      [this] { this->checkUpdate(); });
+    this->updateTile->setWidth(0);
+    this->updateTile->setGrow(1);
+    tools->addView(this->updateTile);
+
 #ifdef BUILTIN_NSP
     brls::Box* toolsGap = new brls::Box();
     toolsGap->setWidth(16);
@@ -708,6 +720,24 @@ void ProfilePage::reload() {
     this->account = AccountInfo();
     this->refreshing = false;
     this->refreshAccount();
+}
+
+void ProfilePage::checkUpdate() {
+    if (this->checkingUpdate) return;
+    this->checkingUpdate = true;
+    if (this->updateTile)
+        this->updateTile->setTitle("cloud/profile/checking"_i18n);
+
+    checkForUpdate([this, alive = this->alive](bool ok, const UpdateInfo& info,
+                                               const std::string& error) {
+        brls::sync([this, alive, ok, info, error] {
+            if (!*alive) return;
+            this->checkingUpdate = false;
+            if (this->updateTile)
+                this->updateTile->setTitle("cloud/profile/check_update"_i18n);
+            presentUpdateResult(info, ok, error, true);
+        });
+    });
 }
 
 void ProfilePage::installDesktopIcon() {

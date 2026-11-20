@@ -201,6 +201,8 @@
     "desktop": "添加到桌面",
     "desktop_warn": "安装桌面图标可能导致ban机，请再次确认",
     "ok": "确定",
+    "check_update": "检查更新",
+    "checking": "正在检查…",
     "refreshing": "正在刷新…",
     "features": "功能介绍",
     "features_title": "功能介绍",
@@ -279,5 +281,11 @@
     "about_follow_name": "爱柯基",
     "about_follow_id": "抖音号：40054844563",
     "about_follow_hint": "用抖音扫码关注，获取版本更新与使用技巧"
+  },
+  "update": {
+    "found": "发现新版本",
+    "hint": "请前往「应用商店」更新后重启应用",
+    "up_to_date": "已是最新版本",
+    "failed": "检查更新失败："
   }
 }

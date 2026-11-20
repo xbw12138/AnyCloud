@@ -8,6 +8,7 @@
 #include "cloud/pages/downloads_page.hpp"
 #include "cloud/pages/file_list_page.hpp"
 #include "cloud/pages/profile_page.hpp"
+#include "cloud/update_check.hpp"
 #include "nxkit/ui/auto_tab_frame.hpp"
 
 using namespace brls::literals;
@@ -127,6 +128,16 @@ brls::View* MainActivity::createContentView() {
                              tabs->focus2NextTab();
                              return true;
                          });
+
+    // 启动时静默检查一次新版本，有更新才弹窗提示。
+    checkForUpdate([](bool ok, const UpdateInfo& info, const std::string& error) {
+        if (!ok || !info.available) return;
+        brls::sync([info] {
+            brls::delay(1200, [info] {
+                presentUpdateResult(info, true, std::string(), false);
+            });
+        });
+    });
 
     return tabs;
 }
