@@ -9,9 +9,6 @@
 
 #ifdef __SWITCH__
 #include <switch.h>
-#ifdef BUILTIN_NSP
-#include "nspmini.hpp"
-#endif
 #endif
 
 #include "cloud/drive/drive_manager.hpp"
@@ -43,10 +40,14 @@ static void recordInstalledVersion() {}
 #ifdef BUILTIN_NSP
 // 1.6.6 起桌面图标改用新的转发器标题号；以新图标启动时删掉旧标题，
 // 避免主菜单同时留着旧的快捷方式。以旧标题运行时跳过，避免删除正在运行的标题。
+// 注意：这里不能用 mini::GetTitleID()，它读取的是 InstallSD 内部记录的列表，
+// 启动时列表为空，越界访问会直接崩溃。
 static void removeLegacyDesktopIcon() {
-    constexpr u64 kForwarderTitleId = 0x010FF000FFFF0104ULL;
     constexpr u64 kLegacyTitleId = 0x010FF000FFFF0103ULL;
-    if (mini::GetTitleID() == kLegacyTitleId) return;
+    u64 programId = 0;
+    if (R_FAILED(svcGetInfo(&programId, InfoType_ProgramId, CUR_PROCESS_HANDLE, 0)))
+        return;
+    if (programId == kLegacyTitleId) return;
     if (R_FAILED(nsInitialize())) return;
     nsDeleteApplicationCompletely(kLegacyTitleId);
     nsExit();
