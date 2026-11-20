@@ -52,9 +52,10 @@ std::string firstCharacter(const std::string& text) {
 }
 
 #ifdef BUILTIN_NSP
-// 桌面图标由独立的转发器标题提供。1.6.6 起换成新的标题号，绕开主菜单
-// 对旧标题图标的缓存；旧标题（0103）会在以新图标启动后被清理。
-constexpr u64 kForwarderTitleId = 0x010FF000FFFF0104ULL;
+// 桌面图标由独立的转发器标题提供。01A0 是 AnyCloud 独占段：
+// 0101-0104 已被 Switch小程序/应用商店 等项目占用，用那些号会被主菜单
+// 当成别的软件（图标、名称都显示成对方的）。
+constexpr u64 kForwarderTitleId = 0x010FF000FFFF01A0ULL;
 #endif
 
 }  // namespace

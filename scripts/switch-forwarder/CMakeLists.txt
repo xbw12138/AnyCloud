@@ -19,7 +19,8 @@ endif()
 
 project(nsp_forwarder)
 
-set(FORWARDER_TITLEID "010FF000FFFF0104")
+# 0101-0104 已被 Switch小程序/应用商店 等项目占用，AnyCloud 使用独立段避免冲突。
+set(FORWARDER_TITLEID "010FF000FFFF01A0")
 set(FORWARDER_NAME "AnyCloud")
 set(FORWARDER_AUTHOR "xbw12138")
 set(FORWARDER_VERSION "1.0.1")
