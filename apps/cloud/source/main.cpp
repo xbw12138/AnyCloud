@@ -7,6 +7,13 @@
 #include <cstdlib>
 #include <fstream>
 
+#ifdef __SWITCH__
+#include <switch.h>
+#ifdef BUILTIN_NSP
+#include "nspmini.hpp"
+#endif
+#endif
+
 #include "cloud/drive/drive_manager.hpp"
 #include "cloud/main_activity.hpp"
 #include "cloud/pages/login_page.hpp"
@@ -33,8 +40,24 @@ static void recordInstalledVersion() {
 static void recordInstalledVersion() {}
 #endif
 
+#ifdef BUILTIN_NSP
+// 1.6.6 起桌面图标改用新的转发器标题号；以新图标启动时删掉旧标题，
+// 避免主菜单同时留着旧的快捷方式。以旧标题运行时跳过，避免删除正在运行的标题。
+static void removeLegacyDesktopIcon() {
+    constexpr u64 kForwarderTitleId = 0x010FF000FFFF0104ULL;
+    constexpr u64 kLegacyTitleId = 0x010FF000FFFF0103ULL;
+    if (mini::GetTitleID() == kLegacyTitleId) return;
+    if (R_FAILED(nsInitialize())) return;
+    nsDeleteApplicationCompletely(kLegacyTitleId);
+    nsExit();
+}
+#else
+static void removeLegacyDesktopIcon() {}
+#endif
+
 int main(int argc, char** argv) {
     recordInstalledVersion();
+    removeLegacyDesktopIcon();
     // Same console defaults wiliwili uses: hardware decoding on, plus a small
     // demuxer cache so large streams do not stutter or fail to decode.
 #ifdef NXKIT_WITH_MPV

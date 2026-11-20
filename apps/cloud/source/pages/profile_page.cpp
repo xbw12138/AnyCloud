@@ -51,6 +51,12 @@ std::string firstCharacter(const std::string& text) {
     return text.substr(0, end);
 }
 
+#ifdef BUILTIN_NSP
+// 桌面图标由独立的转发器标题提供。1.6.6 起换成新的标题号，绕开主菜单
+// 对旧标题图标的缓存；旧标题（0103）会在以新图标启动后被清理。
+constexpr u64 kForwarderTitleId = 0x010FF000FFFF0104ULL;
+#endif
+
 }  // namespace
 
 /// Storage usage bar: faint rounded track with an accent fill.
@@ -711,8 +717,7 @@ void ProfilePage::installDesktopIcon() {
     dialog->addButton("cloud/profile/ok"_i18n, []() {
         brls::Application::blockInputs();
         mini::InstallSD("romfs:/nsp_forwarder.nsp");
-        u64 titleId = mini::GetTitleID();
-        appletRequestLaunchApplication(titleId, NULL);
+        appletRequestLaunchApplication(kForwarderTitleId, NULL);
     });
     dialog->open();
 #endif
