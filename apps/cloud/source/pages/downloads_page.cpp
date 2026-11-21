@@ -5,11 +5,23 @@
 #include "cloud/pages/downloads_page.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <functional>
+#include <memory>
+#include <mutex>
+#include <set>
+#include <sys/stat.h>
 
+#include <borealis/core/thread.hpp>
+
+#include "cloud/drive/local_provider.hpp"
+#include "cloud/pages/player_page.hpp"
 #include "cloud/ui/popup.hpp"
+#include "cloud/util/zip_extract.hpp"
+#include "cpr/async.h"
 #include "nxkit/ui/auto_tab_frame.hpp"
 
 using namespace brls::literals;
@@ -119,6 +131,189 @@ std::string joinMeta(const std::vector<std::string>& parts) {
         out += part;
     }
     return out;
+}
+
+std::string lowerExtension(const std::string& name) {
+    size_t slash = name.find_last_of("/\\");
+    std::string base = slash == std::string::npos ? name : name.substr(slash + 1);
+    size_t dot = base.find_last_of('.');
+    if (dot == std::string::npos) return std::string();
+    std::string ext = base.substr(dot + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    return ext;
+}
+
+std::string directoryOf(const std::string& path) {
+    size_t slash = path.find_last_of('/');
+    return slash == std::string::npos ? std::string() : path.substr(0, slash);
+}
+
+/// A finished download as a local playback entry: the path doubles as the id,
+/// which the player hands straight to mpv.
+DriveFile localFileFor(const DownloadTask& task) {
+    DriveFile file;
+    file.id = task.path;
+    file.name = task.name;
+    file.providerId = "local";
+    file.provider = "本地文件";
+    return file;
+}
+
+bool pathExists(const std::string& path) {
+    struct stat st;
+    return stat(path.c_str(), &st) == 0;
+}
+
+std::string baseDirForZip(const std::string& zipPath) {
+    size_t slash = zipPath.find_last_of('/');
+    size_t dot = zipPath.find_last_of('.');
+    if (dot != std::string::npos &&
+        (slash == std::string::npos || dot > slash))
+        return zipPath.substr(0, dot);
+    return zipPath + "_extracted";
+}
+
+std::string uniqueDir(const std::string& base) {
+    if (!pathExists(base)) return base;
+    for (int i = 2; i < 1000; i++) {
+        std::string candidate = base + " (" + std::to_string(i) + ")";
+        if (!pathExists(candidate)) return candidate;
+    }
+    return base;
+}
+
+/// Action the A button performs on a finished row.
+std::string finishedRowHint(const DownloadTask& task) {
+    if (task.state == DownloadState::Done && !task.path.empty()) {
+        MediaKind kind = localFileFor(task).mediaKind();
+        if (kind == MediaKind::Video || kind == MediaKind::Audio)
+            return "cloud/download/play"_i18n;
+        if (lowerExtension(task.name) == "zip" ||
+            lowerExtension(task.path) == "zip")
+            return "cloud/download/extract"_i18n;
+    }
+    return "cloud/download/details"_i18n;
+}
+
+std::mutex g_extractMutex;
+std::set<std::string> g_extracting;
+
+/// Shows a cancellable progress card and extracts the archive in the
+/// background.
+void beginExtract(const std::string& zipPath) {
+    {
+        std::lock_guard<std::mutex> lock(g_extractMutex);
+        if (!g_extracting.insert(zipPath).second) {
+            brls::Application::notify("cloud/download/extract_busy"_i18n);
+            return;
+        }
+    }
+
+    brls::Theme theme = brls::Application::getTheme();
+    brls::Box* card = makePopupCard(46);
+
+    brls::Label* title = new brls::Label();
+    title->setText("cloud/download/extracting"_i18n);
+    title->setFontSize(19);
+    title->setHeight(24);
+    title->setTextColor(theme["cloud/text"]);
+    card->addView(title);
+
+    brls::Label* percent = new brls::Label();
+    percent->setText("0%");
+    percent->setFontSize(34);
+    percent->setHeight(42);
+    percent->setMarginTop(12);
+    percent->setTextColor(theme["cloud/text"]);
+    card->addView(percent);
+
+    brls::Label* detail = new brls::Label();
+    detail->setText("0 / 0");
+    detail->setFontSize(13);
+    detail->setMarginTop(6);
+    detail->setTextColor(theme["cloud/text_secondary"]);
+    card->addView(detail);
+
+    brls::Box* actions = new brls::Box(brls::Axis::ROW);
+    actions->setAlignItems(brls::AlignItems::CENTER);
+    actions->setJustifyContent(brls::JustifyContent::CENTER);
+    actions->setWidthPercentage(100);
+    actions->setMarginTop(20);
+
+    auto cancelled = std::make_shared<std::atomic<bool>>(false);
+    auto alive = std::make_shared<std::atomic<bool>>(true);
+
+    auto abort = [cancelled, alive] {
+        cancelled->store(true);
+        alive->store(false);
+        brls::Application::popActivity();
+    };
+
+    PillButton* cancelButton =
+        new PillButton("cloud/files/action/cancel"_i18n, false, abort);
+    cancelButton->dropTrailingMargin();
+    actions->addView(cancelButton);
+    card->addView(actions);
+
+    card->registerAction("hints/back"_i18n, brls::BUTTON_B,
+                         [abort](brls::View*) {
+                             abort();
+                             return true;
+                         });
+
+    presentPopup(card, cancelButton);
+
+    const std::string doneText = "cloud/download/extract_done"_i18n;
+    const std::string failedText = "cloud/download/extract_failed"_i18n;
+    const std::string cancelledText = "cloud/download/extract_cancelled"_i18n;
+
+    cpr::async([zipPath, doneText, failedText, cancelledText, cancelled, alive,
+                percent, detail] {
+        std::string outputDir = uniqueDir(baseDirForZip(zipPath));
+        auto last = std::chrono::steady_clock::now();
+
+        ZipExtractResult result = extractZip(
+            zipPath, outputDir, [cancelled] { return cancelled->load(); },
+            [&](uint64_t done, uint64_t total, int files, int totalFiles,
+                const std::string&) {
+                auto now = std::chrono::steady_clock::now();
+                if (now - last < std::chrono::milliseconds(200)) return;
+                last = now;
+
+                int value = total > 0
+                                ? (int)(done * 100 / total)
+                                : (totalFiles > 0 ? files * 100 / totalFiles
+                                                  : 0);
+                std::string percentText = std::to_string(value) + "%";
+                std::string detailText =
+                    std::to_string(files) + " / " + std::to_string(totalFiles);
+                brls::sync([alive, percent, detail, percentText, detailText] {
+                    if (!alive->load()) return;
+                    percent->setText(percentText);
+                    detail->setText(detailText);
+                });
+            });
+
+        std::string message;
+        if (result.ok)
+            message = doneText;
+        else if (result.error == "cancelled")
+            message = cancelledText;
+        else
+            message = failedText + " " + result.error;
+
+        brls::sync([zipPath, message, alive] {
+            {
+                std::lock_guard<std::mutex> lock(g_extractMutex);
+                g_extracting.erase(zipPath);
+            }
+            if (alive->load()) {
+                alive->store(false);
+                brls::Application::popActivity();
+            }
+            brls::Application::notify(message);
+        });
+    });
 }
 
 /// Rounded track with a gradient fill, sized by the caller.
@@ -651,7 +846,7 @@ brls::Box* DownloadPage::buildFinishedRow(const DownloadTask& task,
 
     const std::string hint =
         this->selecting ? "cloud/download/choose"_i18n
-                        : "cloud/download/details"_i18n;
+                        : finishedRowHint(task);
     TaskCard* card = new TaskCard(hint, [this, id = task.id] {
         this->runRowAction(id);
     });
@@ -906,7 +1101,95 @@ void DownloadPage::runRowAction(uint64_t id) {
         this->toggleSelect(id);
         return;
     }
+
+    if (task->state == DownloadState::Done && !task->path.empty()) {
+        MediaKind kind = localFileFor(*task).mediaKind();
+        if (kind == MediaKind::Video || kind == MediaKind::Audio) {
+            this->playLocal(*task, kind == MediaKind::Audio);
+            return;
+        }
+        if (lowerExtension(task->name) == "zip" ||
+            lowerExtension(task->path) == "zip") {
+            this->confirmExtract(*task);
+            return;
+        }
+    }
     this->showDetails(id);
+}
+
+void DownloadPage::playLocal(const DownloadTask& task, bool audio) {
+    MediaKind wanted = audio ? MediaKind::Audio : MediaKind::Video;
+    std::string directory = directoryOf(task.path);
+    auto provider = std::make_shared<LocalDriveProvider>();
+
+    // Same-folder playback, mirroring the file list: the other finished
+    // entries in this folder become the playlist.
+    std::vector<DriveFile> playlist;
+    size_t start = 0;
+    for (const auto& other : this->latest) {
+        if (other.state != DownloadState::Done || other.path.empty()) continue;
+        if (directoryOf(other.path) != directory) continue;
+        DriveFile file = localFileFor(other);
+        if (file.mediaKind() != wanted) continue;
+        if (other.id == task.id) start = playlist.size();
+        playlist.push_back(std::move(file));
+    }
+    if (playlist.empty()) {
+        playlist.push_back(localFileFor(task));
+        start = 0;
+    }
+
+    brls::Application::pushActivity(new brls::Activity(
+        new PlayerPage(provider, std::move(playlist), start, audio)));
+}
+
+void DownloadPage::confirmExtract(const DownloadTask& task) {
+    if (task.path.empty()) return;
+    std::string zipPath = task.path;
+    brls::Theme theme = brls::Application::getTheme();
+
+    brls::Box* card = makePopupCard(46);
+
+    brls::Label* title = new brls::Label();
+    title->setText("cloud/download/extract"_i18n);
+    title->setFontSize(19);
+    title->setHeight(24);
+    title->setTextColor(theme["cloud/text"]);
+    card->addView(title);
+
+    brls::Label* message = new brls::Label();
+    message->setText("cloud/download/extract_confirm"_i18n);
+    message->setFontSize(13);
+    message->setMarginTop(10);
+    message->setTextColor(theme["cloud/text_secondary"]);
+    card->addView(message);
+
+    brls::Box* actions = new brls::Box(brls::Axis::ROW);
+    actions->setAlignItems(brls::AlignItems::CENTER);
+    actions->setJustifyContent(brls::JustifyContent::FLEX_END);
+    actions->setWidthPercentage(100);
+    actions->setMarginTop(22);
+
+    PillButton* cancel =
+        new PillButton("cloud/files/action/cancel"_i18n, false, [] {
+            brls::Application::popActivity();
+        });
+    actions->addView(cancel);
+
+    // Start the extraction only once this popup has really left the activity
+    // stack; pushing the progress activity before its deferred pop would make
+    // the pop remove the wrong activity.
+    PillButton* confirm = new PillButton(
+        "cloud/download/extract"_i18n, false, [zipPath] {
+            brls::Application::popActivity(
+                brls::TransitionAnimation::NONE,
+                [zipPath] { beginExtract(zipPath); });
+        });
+    confirm->dropTrailingMargin();
+    actions->addView(confirm);
+
+    card->addView(actions);
+    presentPopup(card, confirm);
 }
 
 void DownloadPage::confirmDeleteSelected() {

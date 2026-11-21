@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 
@@ -450,13 +451,14 @@ PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
                 this->showQualityMenu();
                 return true;
             });
-        // "-" (BUTTON_BACK) opens the subtitle list; it is the only free
-        // button next to the ones already used by the player.
+        // "-" (BUTTON_BACK) opens the track list: embedded subtitles, the
+        // subtitle files next to the video and the embedded audio tracks. It is
+        // the only free button next to the ones already used by the player.
         this->registerAction(
-            "cloud/player/subtitle"_i18n, brls::BUTTON_BACK,
+            "cloud/player/track"_i18n, brls::BUTTON_BACK,
             [this](brls::View*) -> bool {
                 this->showOsd();
-                this->showSubtitleMenu();
+                this->showTrackMenu();
                 return true;
             });
         // R3 switches the displayed aspect ratio (4:3 material on a 16:9
@@ -577,7 +579,11 @@ void PlayerPage::playOriginal() {
                         error.empty() ? "cloud/player/no_stream"_i18n : error);
                     return;
                 }
-                this->startUrl(url, headers);
+                // Streaming headers differ from download headers for some
+                // drives (Baidu's CDN rejects the netdisk UA with 403 but the
+                // same link works with a browser identity).
+                std::string playback = this->provider->playbackHeaders();
+                this->startUrl(url, playback.empty() ? headers : playback);
             });
         });
 }
@@ -593,7 +599,10 @@ bool PlayerPage::playAt(size_t index) {
         this->file.providerId = this->provider->id();
         this->file.provider = this->provider->name();
     }
-    RecentStore::instance().add(this->file);
+    // Local files are opened by path, they cannot be resolved back through a
+    // drive later, so they never enter the recent list.
+    if (this->provider && this->provider->id() != "local")
+        RecentStore::instance().add(this->file);
     logDebug("player: play index " + std::to_string(index) + " '" +
              this->file.name + "'");
 
@@ -609,6 +618,8 @@ bool PlayerPage::playAt(size_t index) {
     // Subtitles belong to the video that was playing, not to the new one.
     this->subtitles.clear();
     this->subtitleIndex = -1;
+    this->audioTracks.clear();
+    this->embeddedSubtitles.clear();
     this->activeSubtitlePath.clear();
     this->pendingSubtitlePath.clear();
 
@@ -771,6 +782,8 @@ void PlayerPage::onMpvEvent(int event) {
         case MpvEventEnum::MPV_LOADED: {
             this->setStatus("");
             auto& mpv = nxkit::MPVCore::instance();
+            // The demuxer knows the container's audio / subtitle tracks now.
+            this->scanTracks();
             // reset() clears mpv properties between files: restore the speed
             // the user picked with the L3 menu.
             if (this->playbackSpeed != 1.0) mpv.setSpeed(this->playbackSpeed);
@@ -1156,24 +1169,193 @@ void PlayerPage::fetchSubtitlePage() {
         });
 }
 
-void PlayerPage::showSubtitleMenu() {
+/// Human readable name of an embedded track: its title, its language or a
+/// plain fallback when the container carries neither.
+std::string PlayerPage::trackText(const MediaTrack& track) {
+    std::string text = track.title;
+    if (!track.lang.empty() && track.lang != text)
+        text = text.empty() ? track.lang : text + " (" + track.lang + ")";
+    if (text.empty()) text = "Track " + std::to_string(track.id);
+    if (!track.codec.empty()) text += " · " + track.codec;
+    return text;
+}
+
+void PlayerPage::scanTracks() {
 #ifdef NXKIT_WITH_MPV
-    if (this->subtitles.empty()) {
-        this->showPlayerMessage("cloud/player/subtitle_none"_i18n);
+    auto& mpv = nxkit::MPVCore::instance();
+    this->audioTracks.clear();
+    this->embeddedSubtitles.clear();
+    if (mpv.isStopped()) return;
+
+    // aid / sid hold the id of the active track, "no" when disabled. Track
+    // entries themselves are read through track-list/<n>/... properties; format
+    // flags are requested as strings because mpv only converts those to int64
+    // reliably for numeric properties.
+    auto parseId = [](const std::string& value) -> int64_t {
+        return (value.empty() || value == "no") ? -1 : atoll(value.c_str());
+    };
+    const int64_t audioId = parseId(mpv.getString("aid"));
+    const int64_t subId = parseId(mpv.getString("sid"));
+
+    const int64_t count = mpv.getInt("track-list/count");
+    for (int64_t i = 0; i < count; i++) {
+        const std::string prefix = "track-list/" + std::to_string(i) + "/";
+        const std::string type = mpv.getString(prefix + "type");
+        if (type != "audio" && type != "sub") continue;
+        // External subtitles are the files this page adds itself; they are
+        // already listed separately in the menu.
+        if (type == "sub" && mpv.getString(prefix + "external") == "yes") continue;
+
+        MediaTrack track;
+        track.id = mpv.getInt(prefix + "id");
+        track.title = mpv.getString(prefix + "title");
+        track.lang = mpv.getString(prefix + "lang");
+        track.codec = mpv.getString(prefix + "codec");
+        if (type == "audio") {
+            track.selected = track.id == audioId;
+            this->audioTracks.push_back(std::move(track));
+        } else {
+            track.selected = track.id == subId;
+            this->embeddedSubtitles.push_back(std::move(track));
+        }
+    }
+    logDebug("player: tracks audio=" + std::to_string(this->audioTracks.size()) +
+             " sub=" + std::to_string(this->embeddedSubtitles.size()));
+#endif
+}
+
+void PlayerPage::showTrackMenu() {
+#ifdef NXKIT_WITH_MPV
+    // Pick up tracks added after load (mpv exposes HLS subtitle groups late).
+    this->scanTracks();
+
+    bool subSelected = this->subtitleIndex >= 0;
+    for (const auto& track : this->embeddedSubtitles)
+        subSelected = subSelected || track.selected;
+    if (this->subtitles.empty() && this->embeddedSubtitles.empty() &&
+        this->audioTracks.empty()) {
+        this->showPlayerMessage("cloud/player/track_none"_i18n);
         return;
     }
-    std::vector<std::string> names;
-    names.push_back("cloud/player/subtitle_off"_i18n);
-    for (const auto& sub : this->subtitles) names.push_back(sub.name);
 
+    enum class Kind { Off, EmbeddedSub, FileSub, Audio, Header };
+    struct Item {
+        Kind kind;
+        int index;
+        /// mpv track id for embedded entries; index would go stale when the
+        /// stream reloads while the menu is open.
+        int64_t trackId;
+    };
+
+    std::vector<std::string> names;
+    std::vector<Item> items;
+    // The menu starts with "subtitles off" so a mis-downloaded track can be
+    // hidden without leaving the video.
+    names.push_back(std::string(subSelected ? "   " : "▶ ") +
+                    "cloud/player/subtitle_off"_i18n);
+    items.push_back({Kind::Off, -1, 0});
+
+    for (size_t i = 0; i < this->embeddedSubtitles.size(); i++) {
+        const MediaTrack& track = this->embeddedSubtitles[i];
+        names.push_back(std::string(track.selected ? "▶ " : "   ") +
+                        brls::getStr("cloud/player/track_embedded") + " · " +
+                        trackText(track));
+        items.push_back({Kind::EmbeddedSub, (int)i, track.id});
+    }
+    for (size_t i = 0; i < this->subtitles.size(); i++) {
+        names.push_back(std::string((int)i == this->subtitleIndex ? "▶ " : "   ") +
+                        brls::getStr("cloud/player/track_file") + " · " +
+                        this->subtitles[i].name);
+        items.push_back({Kind::FileSub, (int)i, 0});
+    }
+    if (!this->audioTracks.empty()) {
+        names.push_back("── " + brls::getStr("cloud/player/track_audio") + " ──");
+        items.push_back({Kind::Header, -1, 0});
+        for (size_t i = 0; i < this->audioTracks.size(); i++) {
+            const MediaTrack& track = this->audioTracks[i];
+            names.push_back(std::string(track.selected ? "▶ " : "   ") +
+                            trackText(track));
+            items.push_back({Kind::Audio, (int)i, track.id});
+        }
+    }
+
+    // Highlight the currently active entry.
+    int current = 0;
+    for (size_t i = 0; i < names.size(); i++) {
+        if (names[i].compare(0, 4, "▶ ") == 0) {
+            current = (int)i;
+            break;
+        }
+    }
+
+    // The Dropdown callback copies the item table, so share it by value.
+    auto entries = std::make_shared<std::vector<Item>>(std::move(items));
     brls::Dropdown* dropdown = new brls::Dropdown(
-        "cloud/player/subtitle"_i18n, names,
-        [this](int selected) {
-            if (selected < 0) return;
-            this->selectSubtitle(selected - 1);
+        "cloud/player/track"_i18n, names,
+        [this, alive = this->alive, entries](int selected) {
+            if (!*alive) return;
+            if (selected < 0 || selected >= (int)entries->size()) return;
+            const Item& item = (*entries)[selected];
+            switch (item.kind) {
+                case Kind::Off:
+                    this->selectSubtitle(-1);
+                    break;
+                case Kind::EmbeddedSub:
+                    this->selectEmbeddedSubtitle(item.trackId);
+                    break;
+                case Kind::FileSub:
+                    this->selectSubtitle(item.index);
+                    break;
+                case Kind::Audio:
+                    this->selectAudioTrack(item.trackId);
+                    break;
+                default:
+                    break;
+            }
         },
-        this->subtitleIndex + 1);
+        current);
     brls::Application::pushActivity(new brls::Activity(dropdown));
+#endif
+}
+
+void PlayerPage::selectEmbeddedSubtitle(int64_t trackId) {
+#ifdef NXKIT_WITH_MPV
+    auto& mpv = nxkit::MPVCore::instance();
+    // An embedded track replaces any downloaded subtitle file.
+    this->subtitleIndex = -1;
+    this->activeSubtitlePath.clear();
+    this->pendingSubtitlePath.clear();
+
+    std::string label;
+    for (auto& track : this->embeddedSubtitles) {
+        track.selected = track.id == trackId;
+        if (track.selected) label = trackText(track);
+    }
+    mpv.command_async("set", "sid",
+                      trackId < 0 ? std::string("no") : std::to_string(trackId));
+    mpv.command_async("set", "sub-visibility", trackId < 0 ? "no" : "yes");
+    this->showOsd();
+    this->showPlayerMessage(
+        "cloud/player/subtitle_switched"_i18n + (label.empty() ? "" : " " + label));
+    this->updateOsd();
+#endif
+}
+
+void PlayerPage::selectAudioTrack(int64_t trackId) {
+#ifdef NXKIT_WITH_MPV
+    if (trackId < 0) return;
+    auto& mpv = nxkit::MPVCore::instance();
+    std::string label;
+    for (auto& track : this->audioTracks) {
+        track.selected = track.id == trackId;
+        if (track.selected) label = trackText(track);
+    }
+    mpv.command_async("set", "aid", std::to_string(trackId));
+    logDebug("player: audio track -> " + std::to_string(trackId));
+    this->showOsd();
+    this->showPlayerMessage(
+        "cloud/player/audio_switched"_i18n + (label.empty() ? "" : " " + label));
+    this->updateOsd();
 #endif
 }
 
@@ -1184,7 +1366,10 @@ void PlayerPage::selectSubtitle(int index) {
         this->subtitleIndex = -1;
         this->activeSubtitlePath.clear();
         this->pendingSubtitlePath.clear();
+        // Also drop an embedded subtitle track that may be selected.
+        mpv.command_async("set", "sid", "no");
         mpv.command_async("set", "sub-visibility", "no");
+        this->showPlayerMessage("cloud/player/subtitle_off"_i18n);
         return;
     }
     if (!this->provider) return;

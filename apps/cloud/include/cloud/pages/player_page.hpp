@@ -94,10 +94,30 @@ private:
     void requestSubtitles();
     /// Loads one page of the video's directory while collecting subtitles.
     void fetchSubtitlePage();
-    /// MINUS: lists the subtitles found next to the video ("off" first).
-    void showSubtitleMenu();
+    /// MINUS: lists the subtitles the container embeds plus the subtitle files
+    /// found next to the video, followed by the embedded audio tracks.
+    void showTrackMenu();
     /// Downloads and activates subtitles[index], -1 turns subtitles off.
     void selectSubtitle(int index);
+
+    /// One audio or subtitle track mpv found inside the played stream. Quark
+    /// transcodes keep every audio track and the WebVTT subtitles of the
+    /// original file in the HLS playlist, so switching them needs no provider
+    /// request at all.
+    struct MediaTrack {
+        int64_t id = 0;
+        std::string lang;
+        std::string title;
+        std::string codec;
+        bool selected = false;
+    };
+    /// Title / language / codec of a track, for the menu and status lines.
+    static std::string trackText(const MediaTrack& track);
+    /// Re-reads mpv's track-list into audioTracks / embeddedSubtitles.
+    void scanTracks();
+    /// Activates one of the embedded tracks by its mpv id (-1 disables).
+    void selectEmbeddedSubtitle(int64_t trackId);
+    void selectAudioTrack(int64_t trackId);
     void retryWithSoftwareDec();
     bool savePosition();
 
@@ -121,8 +141,12 @@ private:
 
     /// Subtitle files found in the directory of the current video.
     std::vector<DriveFile> subtitles;
-    /// Entry of `subtitles` that is active, -1 when subtitles are off.
+    /// Entry of `subtitles` that is active, -1 when subtitles are off or an
+    /// embedded track is playing.
     int subtitleIndex = -1;
+    /// Audio and subtitle tracks carried by the stream itself (mpv track-list).
+    std::vector<MediaTrack> audioTracks;
+    std::vector<MediaTrack> embeddedSubtitles;
     /// Id of the video `subtitles` were collected for, guards late replies.
     std::string subtitleScanId;
     std::string subtitleScanStem;

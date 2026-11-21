@@ -182,6 +182,78 @@ private:
     std::function<void()> callback;
 };
 
+/// Top call-to-action row that opens the "new folder" prompt.
+class NewDirRow : public brls::Box {
+public:
+    explicit NewDirRow(std::function<void()> callback)
+        : callback(std::move(callback)) {
+        brls::Theme theme = brls::Application::getTheme();
+
+        this->setAxis(brls::Axis::ROW);
+        this->setAlignItems(brls::AlignItems::CENTER);
+        this->setHeight(56);
+        this->setPadding(0, 18, 0, 18);
+        this->setMarginBottom(8);
+        this->setCornerRadius(16);
+        this->setHighlightCornerRadius(16);
+        this->setBorderColor(theme["brls/accent"]);
+        this->setBorderThickness(0);
+        this->setFocusable(true);
+
+        brls::Label* plus = new brls::Label();
+        plus->setText("+");
+        plus->setFontSize(26);
+        plus->setTextColor(theme["brls/accent"]);
+        plus->setWidth(22);
+        plus->setHeight(26);
+        plus->setMarginRight(14);
+        this->addView(plus);
+
+        brls::Label* title = new brls::Label();
+        title->setText("cloud/download/new_dir"_i18n);
+        title->setFontSize(17);
+        title->setTextColor(theme["cloud/text"]);
+        title->setHeight(22);
+        title->setGrow(1);
+        this->addView(title);
+
+        brls::Label* hint = new brls::Label();
+        hint->setText("X");
+        hint->setFontSize(13);
+        hint->setTextColor(theme["cloud/text_secondary"]);
+        hint->setHeight(18);
+        this->addView(hint);
+
+        this->registerAction("cloud/download/new_dir"_i18n, brls::BUTTON_A,
+                             [this](brls::View*) {
+                                 if (this->callback) this->callback();
+                                 return true;
+                             });
+        this->refreshStyle();
+    }
+
+    void onFocusGained() override {
+        brls::Box::onFocusGained();
+        this->refreshStyle();
+    }
+
+    void onFocusLost() override {
+        brls::Box::onFocusLost();
+        this->refreshStyle();
+    }
+
+private:
+    void refreshStyle() {
+        brls::Theme theme = brls::Application::getTheme();
+        bool focused = this->isFocused();
+        this->setBackgroundColor(focused ? theme["cloud/surface_alt"]
+                                         : theme["cloud/surface"]);
+        this->setBorderThickness(focused ? 2.0f : 0.0f);
+    }
+
+    std::function<void()> callback;
+};
+
 /// Pinned confirmation row at the bottom of the picker.
 class ConfirmRow : public brls::Box {
 public:
@@ -312,7 +384,12 @@ void LocalDirPage::load(const std::string& rawPath) {
     this->pathLabel->setText(path);
 
     this->listBox->clearViews();
-    brls::View* firstRow = nullptr;
+
+    // Always offer "new folder" at the top so the action is discoverable
+    // without knowing the X shortcut.
+    NewDirRow* newDir = new NewDirRow([this] { this->promptNewDir(); });
+    this->listBox->addView(newDir);
+    brls::View* firstRow = newDir;
 
     if (!isRoot(path)) {
         std::string parent = parentOf(path);
@@ -320,7 +397,6 @@ void LocalDirPage::load(const std::string& rawPath) {
             this->load(parent);
         });
         this->listBox->addView(up);
-        firstRow = up;
     }
 
     std::vector<std::string> dirs;

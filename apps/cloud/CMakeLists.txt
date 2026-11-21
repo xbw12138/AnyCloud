@@ -21,6 +21,22 @@ if(WEBP_LIBRARY AND WEBP_INCLUDE_DIR)
     set(CLOUD_HAS_WEBP ON)
 endif()
 
+# zip extraction (store + deflate) is built on zlib.
+find_library(ZLIB_LIBRARY z)
+find_path(ZLIB_INCLUDE_DIR zlib.h)
+if(PLATFORM_SWITCH)
+    if(EXISTS ${DEVKITPRO}/portlibs/switch/lib/libz.a)
+        set(ZLIB_LIBRARY ${DEVKITPRO}/portlibs/switch/lib/libz.a)
+    endif()
+    if(EXISTS ${DEVKITPRO}/portlibs/switch/include/zlib.h)
+        set(ZLIB_INCLUDE_DIR ${DEVKITPRO}/portlibs/switch/include)
+    endif()
+endif()
+if(ZLIB_LIBRARY AND ZLIB_INCLUDE_DIR)
+    list(APPEND CLOUD_LIBS ${ZLIB_LIBRARY})
+    list(APPEND CLOUD_INCLUDES ${ZLIB_INCLUDE_DIR})
+endif()
+
 if(PLATFORM_SWITCH AND BUILTIN_NSP)
     # nspmini: install the embedded NSP forwarder to the SD card at runtime.
     # Vendored under external/nspmini (lib + headers); install hacbrewpack to
@@ -64,6 +80,7 @@ nxkit_add_app(cloud
         source/util/crypto.cpp
         source/util/text_encoding.cpp
         source/util/gbk_table.cpp
+        source/util/zip_extract.cpp
         LIBS
         ${CLOUD_LIBS}
         )
@@ -71,6 +88,10 @@ nxkit_add_app(cloud
 if(CLOUD_HAS_WEBP)
     target_include_directories(cloud PRIVATE ${WEBP_INCLUDE_DIR})
     target_compile_definitions(cloud PRIVATE CLOUD_HAS_WEBP)
+endif()
+
+if(ZLIB_LIBRARY AND ZLIB_INCLUDE_DIR)
+    target_include_directories(cloud PRIVATE ${ZLIB_INCLUDE_DIR})
 endif()
 
 if(PLATFORM_SWITCH AND BUILTIN_NSP)

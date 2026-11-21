@@ -99,6 +99,7 @@
     "choose": "Choose",
     "selected": "Selected",
     "details": "Details",
+    "play": "Play",
     "section": {
       "active": "Active",
       "finished": "Finished"
@@ -119,7 +120,14 @@
     "delete_record": "Remove record",
     "delete_confirm": "Delete this download record? (Downloaded files are kept)",
     "delete_selected_confirm": "Delete the selected download records?",
-    "clear_confirm": "Clear all finished records?"
+    "clear_confirm": "Clear all finished records?",
+    "extract": "Extract",
+    "extract_confirm": "Extract this archive into the same folder?",
+    "extracting": "Extracting…",
+    "extract_done": "Extraction finished",
+    "extract_failed": "Extraction failed:",
+    "extract_cancelled": "Extraction cancelled",
+    "extract_busy": "This archive is already being extracted"
   },
   "soon": {
     "title": "Coming soon",
@@ -156,7 +164,14 @@
     "subtitle_none": "No subtitles in this folder",
     "subtitle_loaded": "Subtitles loaded",
     "subtitle_failed": "Failed to load subtitles",
-    "hint_video": "A Play/Pause  ←/→ Seek  L/R Prev/Next  X Loop  - Subtitles  + Playlist  Y Quality  R3 Aspect  L3 Speed  B Exit",
+    "subtitle_switched": "Subtitle switched",
+    "track": "Subtitles / Audio",
+    "track_embedded": "Embedded",
+    "track_file": "File",
+    "track_audio": "Audio tracks",
+    "track_none": "No switchable subtitles or audio tracks",
+    "audio_switched": "Audio track switched",
+    "hint_video": "A Play/Pause  ←/→ Seek  L/R Prev/Next  X Loop  - Subtitles/Audio  + Playlist  Y Quality  R3 Aspect  L3 Speed  B Exit",
     "hint_audio": "A Play/Pause  ←/→ Seek  L/R Prev/Next  X Loop  + Playlist  L3 Speed  B Exit"
   },
   "image": {

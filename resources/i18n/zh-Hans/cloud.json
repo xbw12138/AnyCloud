@@ -99,6 +99,7 @@
     "choose": "选择",
     "selected": "已选",
     "details": "详情",
+    "play": "播放",
     "section": {
       "active": "进行中",
       "finished": "已结束"
@@ -119,7 +120,14 @@
     "delete_record": "删除记录",
     "delete_confirm": "删除这条下载记录？（已下载的文件会保留）",
     "delete_selected_confirm": "删除选中的下载记录？",
-    "clear_confirm": "清除所有已结束的记录？"
+    "clear_confirm": "清除所有已结束的记录？",
+    "extract": "解压",
+    "extract_confirm": "将这个压缩包解压到当前文件夹？",
+    "extracting": "正在解压…",
+    "extract_done": "解压完成",
+    "extract_failed": "解压失败：",
+    "extract_cancelled": "已取消解压",
+    "extract_busy": "这个压缩包正在解压中"
   },
   "soon": {
     "title": "即将上线",
@@ -156,7 +164,14 @@
     "subtitle_none": "同目录没有找到字幕",
     "subtitle_loaded": "已加载字幕",
     "subtitle_failed": "字幕加载失败",
-    "hint_video": "A 播放/暂停  ←/→ 快退/快进  L/R 上一集/下一集  X 循环  - 字幕  + 播放目录  Y 清晰度  R3 画面比例  L3 倍速  B 退出",
+    "subtitle_switched": "已切换字幕",
+    "track": "字幕/音轨",
+    "track_embedded": "内嵌",
+    "track_file": "外挂",
+    "track_audio": "音轨",
+    "track_none": "当前视频没有可切换的字幕或音轨",
+    "audio_switched": "已切换音轨",
+    "hint_video": "A 播放/暂停  ←/→ 快退/快进  L/R 上一集/下一集  X 循环  - 字幕/音轨  + 播放目录  Y 清晰度  R3 画面比例  L3 倍速  B 退出",
     "hint_audio": "A 播放/暂停  ←/→ 快退/快进  L/R 上一集/下一集  X 循环  + 播放目录  L3 倍速  B 退出"
   },
   "image": {

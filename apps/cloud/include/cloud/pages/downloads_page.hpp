@@ -60,6 +60,11 @@ private:
     void confirmDeleteSelected();
     void confirmClearFinished();
     void showDetails(uint64_t id);
+    /// Opens a finished video/audio task in the player, using the other
+    /// finished files in the same folder as the playlist.
+    void playLocal(const DownloadTask& task, bool audio);
+    /// Asks for confirmation, then extracts a finished zip in the background.
+    void confirmExtract(const DownloadTask& task);
     void showConfirm(const std::string& title, const std::string& message,
                      const std::string& confirmText, bool danger,
                      std::function<void()> onConfirm);
