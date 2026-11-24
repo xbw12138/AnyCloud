@@ -2,7 +2,7 @@
   "tab": {
     "recent": "Recently viewed",
     "files": "All files",
-    "downloads": "Downloads",
+    "downloads": "Transfers",
     "shared": "Shared",
     "favorites": "Favorites",
     "profile": "Profile",
@@ -76,7 +76,7 @@
     "provider_missing": "The drive this item belongs to is unavailable"
   },
   "download": {
-    "title": "Downloads",
+    "title": "Transfer Manager",
     "action": "Download to device…",
     "choose_dir": "Choose download folder",
     "current_dir": "Current folder",
@@ -85,15 +85,15 @@
     "new_dir": "New folder",
     "new_dir_failed": "Cannot create folder",
     "dir_empty": "No subfolders",
-    "empty": "No download tasks",
-    "empty_hint": "Press X on a file and choose “Download to device…”",
+    "empty": "No transfers yet",
+    "empty_hint": "Press X on a file to save it to the SD card, or use the upload button",
     "clear": "Clear finished",
-    "started": "Added to the download queue",
+    "started": "Added to the transfer queue",
     "cancel": "Cancel",
     "queued": "Queued",
-    "running": "Downloading",
+    "running": "Transferring",
     "done": "Done",
-    "failed": "Download failed",
+    "failed": "Failed",
     "cancelled": "Cancelled",
     "select": "Select",
     "choose": "Choose",
@@ -128,6 +128,10 @@
     "extract_failed": "Extraction failed:",
     "extract_cancelled": "Extraction cancelled",
     "extract_busy": "This archive is already being extracted"
+  },
+  "transfer": {
+    "download": "Download",
+    "upload": "Upload"
   },
   "soon": {
     "title": "Coming soon",
@@ -180,6 +184,28 @@
     "prev": "Previous",
     "next": "Next"
   },
+  "reader": {
+    "loading": "Loading…",
+    "error": "Cannot open this book",
+    "empty": "No readable text found",
+    "page": "Page {0} / {1}",
+    "prev": "Previous page",
+    "next": "Next page",
+    "prev_chapter": "Previous chapter",
+    "next_chapter": "Next chapter",
+    "hint": "←/→ or L/R Page  ZL/ZR Chapter  B Back"
+  },
+  "pdf": {
+    "loading": "Rendering…",
+    "error": "Cannot open this PDF",
+    "page": "Page {0} / {1}",
+    "prev": "Previous page",
+    "next": "Next page",
+    "zoom_in": "Zoom in",
+    "zoom_out": "Zoom out",
+    "unsupported": "PDF viewing is not available in this build",
+    "hint": "L/R Page  Y Zoom in  X Zoom out  D-pad Pan when zoomed  B Back"
+  },
   "log": {
     "title": "Network log",
     "hint": "↑/↓ Select  A Open  X Refresh  Y Clear  B Back",
@@ -224,7 +250,7 @@
     "features_hint": "↑/↓ Browse  B Back",
     "controls": "Controls",
     "controls_hint": "↑/↓ Browse  B Back",
-    "features_intro": "Your cloud drives on the Switch: browse files, stream videos, view photos, download to the SD card, and diagnose problems with the built-in network log. The active drive is always shown at the right end of the tab bar.",
+    "features_intro": "Your cloud drives on the Switch: browse files, upload and download, stream videos, view photos, open PDF / EPUB, and diagnose problems with the built-in network log. The active drive is always shown at the right end of the tab bar.",
     "feature": {
       "drives": { "title": "Multiple drives", "detail": "Quark, Aliyun, 115 and Baidu, switch with one press" },
       "login": { "title": "QR sign-in", "detail": "Scan with your phone, credentials stay local" },
@@ -236,7 +262,9 @@
       "subtitle": { "title": "Subtitles", "detail": "Auto-matched SRT / ASS / SSA / VTT" },
       "quality": { "title": "Quality", "detail": "Press Y to pick Original, 4K, Ultra or HD" },
       "photo": { "title": "Photos", "detail": "Full-size images, L / R to page, B to go back" },
+      "document": { "title": "PDF & EPUB", "detail": "Open PDF and EPUB directly; EPUB keeps images and wraps long lines" },
       "download": { "title": "Save to SD card", "detail": "Queued downloads, multi-select and retry" },
+      "upload": { "title": "Upload to drive", "detail": "Send files from the SD card to your drive; progress shows in Transfers" },
       "account": { "title": "Account overview", "detail": "Avatar, nickname, membership and storage usage" },
       "cache": { "title": "Cover cache", "detail": "Thumbnails are cached on the SD card" },
       "log": { "title": "Network log", "detail": "Built-in request log with status, no PC needed" }
@@ -254,7 +282,7 @@
       "files_back": "Go up one folder",
       "files_more": "More: rename, delete, move, download to this console",
       "files_sort": "Toggle sorting (modified time / name)",
-      "downloads_title": "Downloads",
+      "downloads_title": "Transfer Manager",
       "downloads_select": "Enter / leave multi-select, then delete in bulk",
       "downloads_delete": "Delete the current record or the selected ones",
       "downloads_detail": "Open task details; retry a failed task",
@@ -274,6 +302,12 @@
       "image_title": "Image viewer",
       "image_page": "Previous / next image",
       "image_back": "Back to the file list",
+      "document_title": "PDF & EPUB",
+      "document_page": "Previous / next page",
+      "document_move": "Pan a zoomed PDF; page through an EPUB",
+      "document_zoom": "Zoom in / out (PDF)",
+      "document_chapter": "Previous / next chapter (EPUB)",
+      "document_back": "Back to the file list",
       "log_title": "Network log",
       "log_open": "Show request details and the response body",
       "log_refresh": "Refresh the log list",
@@ -283,7 +317,7 @@
     "about": "About",
     "about_title": "AnyCloud",
     "about_tagline": "Cloud drive client for Nintendo Switch",
-    "about_text": "A cloud drive browser and player for Nintendo Switch: Quark, Aliyun, 115 and Baidu drives, file browsing, video streaming with subtitles, photo viewing and a built-in network log for troubleshooting.",
+    "about_text": "A cloud drive browser and player for Nintendo Switch: Quark, Aliyun, 115 and Baidu drives, file browsing, uploads, video streaming with subtitles, photo viewing, PDF / EPUB reading and a built-in network log for troubleshooting.",
     "about_hint": "↑/↓ Browse  B Back",
     "about_developer": "Developer",
     "about_stack": "Built with",
@@ -302,5 +336,21 @@
     "hint": "Update from the App Store, then restart the app",
     "up_to_date": "You are up to date",
     "failed": "Update check failed:"
+  },
+  "upload": {
+    "choose_file": "Choose a file to upload",
+    "current_dir": "Current location",
+    "enter": "Open folder",
+    "select": "Choose this file",
+    "up": "Go to the parent folder",
+    "dir_empty": "This folder has no files",
+    "uploading": "Uploading",
+    "upload_done": "Upload complete",
+    "queued": "Added to transfers",
+    "unsupported": "This drive does not support upload yet",
+    "msg_file_missing": "Local file not found",
+    "msg_read_failed": "Could not read the local file",
+    "msg_auth": "Session expired, please sign in again",
+    "msg_failed": "Upload failed, please try again later"
   }
 }

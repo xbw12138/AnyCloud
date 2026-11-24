@@ -18,6 +18,9 @@ namespace cloud {
 
 enum class DownloadState { Queued, Running, Done, Failed, Cancelled };
 
+/// Direction of a transfer shown by the download manager.
+enum class TransferKind { Download, Upload };
+
 struct DownloadTask {
     uint64_t id = 0;
     std::string name;
@@ -28,6 +31,7 @@ struct DownloadTask {
     uint64_t total = 0;
     DownloadState state = DownloadState::Queued;
     std::string error;
+    TransferKind kind = TransferKind::Download;
     /// False for records restored from disk: their download url is gone, so
     /// they can only be deleted, not retried.
     bool retryable = true;
@@ -40,6 +44,12 @@ public:
     /// Queues `file` into `directory` (created when missing).
     uint64_t start(std::shared_ptr<DriveProvider> provider, const DriveFile& file,
                    const std::string& directory);
+
+    /// Queues `localPath` for upload into the drive folder `parentId`.
+    uint64_t upload(std::shared_ptr<DriveProvider> provider,
+                    const std::string& parentId, const std::string& localPath,
+                    const std::string& name,
+                    std::function<void(bool ok)> onDone = {});
 
     void cancel(uint64_t id);
     /// Re-queues a failed/cancelled task, resolving a fresh download url.
@@ -63,6 +73,12 @@ private:
         uint64_t total = 0;
         DownloadState state = DownloadState::Queued;
         std::string error;
+        TransferKind kind = TransferKind::Download;
+        /// Upload source file and target drive folder (uploads only).
+        std::string localPath;
+        std::string parentId;
+        /// Called on the UI thread when an upload started from a page ends.
+        std::function<void(bool ok)> onUploadDone;
         std::atomic<bool> cancelled{false};
         // Kept so a failed task can be retried later.
         std::shared_ptr<DriveProvider> providerRef;
@@ -70,6 +86,7 @@ private:
     };
 
     void launch(const std::shared_ptr<TaskState>& state);
+    void launchUpload(const std::shared_ptr<TaskState>& state);
 
     void update(const std::shared_ptr<TaskState>& state,
                 std::function<void(TaskState&)> mutate);

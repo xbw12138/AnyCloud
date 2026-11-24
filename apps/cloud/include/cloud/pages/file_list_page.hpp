@@ -88,6 +88,8 @@ private:
     static bool isFocusWithin(brls::View* view, brls::View* ancestor);
 
     void promptMakeDir();
+    void promptUpload();
+    void startUpload(const std::string& localPath, const std::string& name);
     void pickCurrentDirectory();
     void promptRename(const DriveFile& file);
     void confirmDelete(const DriveFile& file);
@@ -110,6 +112,8 @@ private:
     brls::Label* breadcrumb = nullptr;
     brls::Label* subtitleLabel = nullptr;
     brls::Button* viewToggle = nullptr;
+    /// Kept so its visibility can follow the provider when the drive changes.
+    brls::Button* uploadButton = nullptr;
 
     bool listMode = false;
     SortMode sortMode = SortMode::Time;

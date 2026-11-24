@@ -37,6 +37,8 @@ enum class Glyph {
     Grid,
     List,
     Download,
+    Upload,
+    Document,
     Account,
 };
 
@@ -264,6 +266,42 @@ void drawGlyph(NVGcontext* vg, Glyph glyph, float cx, float cy, float s,
             nvgStroke(vg);
             break;
 
+        case Glyph::Upload:
+            strokeSetup(vg, color, 0.07f * s);
+            // Same arrow as Download, pointing out of the tray.
+            nvgBeginPath(vg);
+            nvgMoveTo(vg, cx, cy + 0.02f * s);
+            nvgLineTo(vg, cx, cy - 0.30f * s);
+            nvgStroke(vg);
+            nvgBeginPath(vg);
+            nvgMoveTo(vg, cx - 0.15f * s, cy - 0.11f * s);
+            nvgLineTo(vg, cx, cy - 0.30f * s);
+            nvgLineTo(vg, cx + 0.15f * s, cy - 0.11f * s);
+            nvgStroke(vg);
+            nvgBeginPath(vg);
+            nvgMoveTo(vg, cx - 0.30f * s, cy + 0.12f * s);
+            nvgLineTo(vg, cx - 0.30f * s, cy + 0.26f * s);
+            nvgLineTo(vg, cx + 0.30f * s, cy + 0.26f * s);
+            nvgLineTo(vg, cx + 0.30f * s, cy + 0.12f * s);
+            nvgStroke(vg);
+            break;
+
+        case Glyph::Document:
+            strokeSetup(vg, color, 0.07f * s);
+            nvgBeginPath(vg);
+            nvgRoundedRect(vg, cx - 0.22f * s, cy - 0.30f * s, 0.44f * s,
+                           0.60f * s, 0.06f * s);
+            nvgStroke(vg);
+            nvgBeginPath(vg);
+            nvgMoveTo(vg, cx - 0.10f * s, cy - 0.12f * s);
+            nvgLineTo(vg, cx + 0.10f * s, cy - 0.12f * s);
+            nvgMoveTo(vg, cx - 0.10f * s, cy - 0.01f * s);
+            nvgLineTo(vg, cx + 0.10f * s, cy - 0.01f * s);
+            nvgMoveTo(vg, cx - 0.10f * s, cy + 0.10f * s);
+            nvgLineTo(vg, cx + 0.02f * s, cy + 0.10f * s);
+            nvgStroke(vg);
+            break;
+
         case Glyph::Account:
             strokeSetup(vg, color, 0.07f * s);
             nvgBeginPath(vg);
@@ -423,9 +461,15 @@ const std::vector<Feature>& features() {
          "cloud/profile/feature/quality/detail"},
         {Glyph::Photo, nvgRGB(64, 150, 255), "cloud/profile/feature/photo/title",
          "cloud/profile/feature/photo/detail"},
+        {Glyph::Document, nvgRGB(86, 156, 255),
+         "cloud/profile/feature/document/title",
+         "cloud/profile/feature/document/detail"},
         {Glyph::Download, nvgRGB(0, 166, 118),
          "cloud/profile/feature/download/title",
          "cloud/profile/feature/download/detail"},
+        {Glyph::Upload, nvgRGB(255, 132, 76),
+         "cloud/profile/feature/upload/title",
+         "cloud/profile/feature/upload/detail"},
         {Glyph::Account, nvgRGB(255, 170, 60),
          "cloud/profile/feature/account/title",
          "cloud/profile/feature/account/detail"},
@@ -491,6 +535,14 @@ const std::vector<ControlGroup>& controlGroups() {
          {
              {"L / R", "cloud/profile/keyguide/image_page"},
              {"B", "cloud/profile/keyguide/image_back"},
+         }},
+        {"cloud/profile/keyguide/document_title",
+         {
+             {"L / R", "cloud/profile/keyguide/document_page"},
+             {"十字键", "cloud/profile/keyguide/document_move"},
+             {"Y / X", "cloud/profile/keyguide/document_zoom"},
+             {"ZL / ZR", "cloud/profile/keyguide/document_chapter"},
+             {"B", "cloud/profile/keyguide/document_back"},
          }},
         {"cloud/profile/keyguide/log_title",
          {

@@ -4,14 +4,18 @@
 
 #include "cloud/drive/baidu_drive.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <sys/types.h>
 
 #include <borealis/core/thread.hpp>
 
 #include "cloud/util/crypto.hpp"
+#include "cloud/util/file_upload.hpp"
 #include "cpr/async.h"
+#include "cpr/util.h"
 #include "nxkit/auth_store.hpp"
 
 using json = nlohmann::json;
@@ -31,6 +35,32 @@ const char* kPassportBase = "https://passport.baidu.com";
 const char* kPcsBase = "https://pcs.baidu.com";
 const char* kPanAppId = "250528";
 const char* kSignMagic = "ebrcUYixaZv2XGu7KIYKxUrqfnOfpDF";
+
+/// Upload diagnostics go to the same on-device log the QR view uses; without
+/// this a failed upload only showed a generic toast.
+void uploadLog(const std::string& line) {
+#ifdef __SWITCH__
+    FILE* file = fopen("sdmc:/switch/nxkit/qr_debug.log", "a");
+#else
+    FILE* file = fopen("/tmp/qr_debug.log", "a");
+#endif
+    if (!file) return;
+    fprintf(file, "%s\n", line.c_str());
+    fclose(file);
+}
+
+std::string snippet(const std::string& body, size_t limit = 200) {
+    if (body.size() <= limit) return body;
+    return body.substr(0, limit) + "...";
+}
+
+/// /api/filemanager and the upload endpoints reject the browser User-Agent
+/// with errno -6; they only accept the netdisk (client) identity.
+nxkit::HttpClient withPanUA(const nxkit::HttpClient& base) {
+    nxkit::HttpClient client = base;
+    client.setHeader("User-Agent", kPanUA);
+    return client;
+}
 
 int64_t nowSeconds() {
     return std::chrono::duration_cast<std::chrono::seconds>(
@@ -210,11 +240,20 @@ void BaiduDrive::mergeResponseCookies(const nxkit::HttpResult& result) {
 }
 
 std::string BaiduDrive::playbackHeaders() const {
-    // Download links are self-authenticated in the query string, and the CDN
-    // rejects the netdisk UA for open-ended stream requests (403), so playback
-    // uses a browser identity instead of the API one.
-    return "Referer: https://pan.baidu.com/\r\nUser-Agent: " +
-           std::string(kWebUA);
+    // Newly issued direct links are signed but still validated against the
+    // account on some CDN nodes, so the cookie must travel with the request.
+    // Keep the browser identity: the netdisk UA is rejected for open-ended
+    // stream requests (403). PlayerPage retries with downloadHeaders() when
+    // the browser identity still fails.
+    std::string jar;
+    {
+        std::lock_guard<std::mutex> lock(cookieMutex);
+        jar = http.cookie();
+    }
+    std::string headers = "Referer: https://pan.baidu.com/\r\nUser-Agent: " +
+                          std::string(kWebUA) + "\r\n";
+    if (!jar.empty()) headers += "Cookie: " + jar + "\r\n";
+    return headers;
 }
 
 std::string BaiduDrive::thumbnailHeaders() const {
@@ -658,22 +697,30 @@ void BaiduDrive::videoStreams(
 
 void BaiduDrive::makeDir(const std::string& parentId, const std::string& name,
                          SimpleCallback callback) {
-    http.postAsync(std::string(kPanBase) + "/api/create",
-                   panQuery({{"a", "commit"},
-                             {"channel", "chunlei"},
-                             {"web", "1"},
-                             {"app_id", kPanAppId},
-                             {"clienttype", "0"}}),
-                   {{"path", joinPath(parentId, name)},
-                    {"isdir", "1"},
-                    {"block_list", "[]"}},
-                   [callback](const nxkit::HttpResult& result) {
-                       if (!result.ok) return callback(result.error);
-                       json root = json::parse(result.body, nullptr, false);
-                       if (root.is_discarded() || root.value("errno", -1) != 0)
-                           return callback("baidu: create folder failed");
-                       callback("");
-                   });
+    ensureBdstoken([this, parentId, name, callback](const std::string& token) {
+        if (token.empty()) return callback("baidu: not logged in");
+        nxkit::HttpClient pan;
+        {
+            std::lock_guard<std::mutex> lock(cookieMutex);
+            pan = withPanUA(http);
+        }
+        pan.postAsync(std::string(kPanBase) + "/api/create",
+                      panQuery({{"a", "commit"},
+                                {"channel", "chunlei"},
+                                {"web", "1"},
+                                {"app_id", kPanAppId},
+                                {"clienttype", "0"}}),
+                      {{"path", joinPath(parentId, name)},
+                       {"isdir", "1"},
+                       {"block_list", "[]"}},
+                      [callback](const nxkit::HttpResult& result) {
+                          if (!result.ok) return callback(result.error);
+                          json root = json::parse(result.body, nullptr, false);
+                          if (root.is_discarded() || root.value("errno", -1) != 0)
+                              return callback("baidu: create folder failed");
+                          callback("");
+                      });
+    });
 }
 
 void BaiduDrive::rename(const std::string& fileId, const std::string& newName,
@@ -684,48 +731,70 @@ void BaiduDrive::rename(const std::string& fileId, const std::string& newName,
         if (fsId == 0)
             return brls::sync([callback] { callback("baidu: file not found"); });
         json item = {{"id", fsId}, {"path", fileId}, {"newname", newName}};
-        nxkit::HttpResult result = http.post(
-            std::string(kPanBase) + "/api/filemanager",
-            panQuery({{"opera", "rename"},
-                      {"async", "2"},
-                      {"onnest", "fail"},
-                      {"channel", "chunlei"},
-                      {"web", "1"},
-                      {"app_id", kPanAppId},
-                      {"clienttype", "0"}}),
-            {{"filelist", json::array({item}).dump()}});
-        std::string error;
-        if (!result.ok)
-            error = result.error;
-        else {
-            json root = json::parse(result.body, nullptr, false);
-            if (root.is_discarded() || root.value("errno", -1) != 0)
-                error = "baidu: rename failed";
-        }
-        brls::sync([callback, error] { callback(error); });
+        ensureBdstoken([this, item, callback](const std::string& token) {
+            if (token.empty())
+                return brls::sync([callback] {
+                    callback("baidu: not logged in");
+                });
+            nxkit::HttpClient pan;
+            {
+                std::lock_guard<std::mutex> lock(cookieMutex);
+                pan = withPanUA(http);
+            }
+            nxkit::HttpResult result = pan.post(
+                std::string(kPanBase) + "/api/filemanager",
+                panQuery({{"opera", "rename"},
+                          {"async", "2"},
+                          {"onnest", "fail"},
+                          {"channel", "chunlei"},
+                          {"web", "1"},
+                          {"app_id", kPanAppId},
+                          {"clienttype", "0"}}),
+                {{"filelist", json::array({item}).dump()}});
+            std::string error;
+            if (!result.ok)
+                error = result.error;
+            else {
+                json root = json::parse(result.body, nullptr, false);
+                if (root.is_discarded() || root.value("errno", -1) != 0)
+                    error = "baidu: rename failed";
+            }
+            brls::sync([callback, error] { callback(error); });
+        });
     });
 }
 
 void BaiduDrive::remove(const std::vector<std::string>& fileIds,
                         SimpleCallback callback) {
+    // Delete wants the paths as a plain string array (objects are refused),
+    // plus the netdisk identity and a bdstoken: without the token the API
+    // answers errno 8001.
     json list = json::array();
-    for (const auto& path : fileIds) list.push_back({{"path", path}});
-    http.postAsync(std::string(kPanBase) + "/api/filemanager",
-                   panQuery({{"opera", "delete"},
-                             {"async", "2"},
-                             {"onnest", "fail"},
-                             {"channel", "chunlei"},
-                             {"web", "1"},
-                             {"app_id", kPanAppId},
-                             {"clienttype", "0"}}),
-                   {{"filelist", list.dump()}},
-                   [callback](const nxkit::HttpResult& result) {
-                       if (!result.ok) return callback(result.error);
-                       json root = json::parse(result.body, nullptr, false);
-                       if (root.is_discarded() || root.value("errno", -1) != 0)
-                           return callback("baidu: delete failed");
-                       callback("");
-                   });
+    for (const auto& path : fileIds) list.push_back(path);
+    ensureBdstoken([this, list, callback](const std::string& token) {
+        if (token.empty()) return callback("baidu: not logged in");
+        nxkit::HttpClient pan;
+        {
+            std::lock_guard<std::mutex> lock(cookieMutex);
+            pan = withPanUA(http);
+        }
+        pan.postAsync(std::string(kPanBase) + "/api/filemanager",
+                      panQuery({{"opera", "delete"},
+                                {"async", "2"},
+                                {"onnest", "fail"},
+                                {"channel", "chunlei"},
+                                {"web", "1"},
+                                {"app_id", kPanAppId},
+                                {"clienttype", "0"}}),
+                      {{"filelist", list.dump()}},
+                      [callback](const nxkit::HttpResult& result) {
+                          if (!result.ok) return callback(result.error);
+                          json root = json::parse(result.body, nullptr, false);
+                          if (root.is_discarded() || root.value("errno", -1) != 0)
+                              return callback("baidu: delete failed");
+                          callback("");
+                      });
+    });
 }
 
 void BaiduDrive::move(const std::vector<std::string>& fileIds,
@@ -735,22 +804,204 @@ void BaiduDrive::move(const std::vector<std::string>& fileIds,
         list.push_back({{"path", path},
                         {"dest", targetDirId},
                         {"newname", baseName(path)}});
-    http.postAsync(std::string(kPanBase) + "/api/filemanager",
-                   panQuery({{"opera", "move"},
-                             {"async", "2"},
-                             {"onnest", "fail"},
-                             {"channel", "chunlei"},
-                             {"web", "1"},
-                             {"app_id", kPanAppId},
-                             {"clienttype", "0"}}),
-                   {{"filelist", list.dump()}},
-                   [callback](const nxkit::HttpResult& result) {
-                       if (!result.ok) return callback(result.error);
-                       json root = json::parse(result.body, nullptr, false);
-                       if (root.is_discarded() || root.value("errno", -1) != 0)
-                           return callback("baidu: move failed");
-                       callback("");
-                   });
+    ensureBdstoken([this, list, callback](const std::string& token) {
+        if (token.empty()) return callback("baidu: not logged in");
+        nxkit::HttpClient pan;
+        {
+            std::lock_guard<std::mutex> lock(cookieMutex);
+            pan = withPanUA(http);
+        }
+        pan.postAsync(std::string(kPanBase) + "/api/filemanager",
+                      panQuery({{"opera", "move"},
+                                {"async", "2"},
+                                {"onnest", "fail"},
+                                {"channel", "chunlei"},
+                                {"web", "1"},
+                                {"app_id", kPanAppId},
+                                {"clienttype", "0"}}),
+                      {{"filelist", list.dump()}},
+                      [callback](const nxkit::HttpResult& result) {
+                          if (!result.ok) return callback(result.error);
+                          json root = json::parse(result.body, nullptr, false);
+                          if (root.is_discarded() || root.value("errno", -1) != 0)
+                              return callback("baidu: move failed");
+                          callback("");
+                      });
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Upload (web API: precreate -> superfile2 blocks -> create)
+// -----------------------------------------------------------------------------
+
+void BaiduDrive::uploadFile(const std::string& parentId, const std::string& name,
+                            const std::string& localPath, UploadCallback progress,
+                            SimpleCallback callback) {
+    const uint64_t total = localFileSize(localPath);
+    FILE* probe = fopen(localPath.c_str(), "rb");
+    if (!probe) return callback("cloud/upload/file_missing");
+    fclose(probe);
+
+    const std::string path = joinPath(parentId, name);
+    ensureBdstoken([this, parentId, path, localPath, name, total, progress, callback](
+                       const std::string& token) {
+        if (token.empty()) return callback("cloud/upload/auth");
+        cpr::async([this, parentId, path, localPath, name, total, token,
+                    progress, callback] {
+            // RAPID hashes each 4 MB slice; the same list is sent to create.
+            static const uint64_t kBlock = 4ULL * 1024 * 1024;
+            const uint64_t blockCount = (total + kBlock - 1) / kBlock;
+
+            json blockList = json::array();
+            for (uint64_t i = 0; i < blockCount; i++) {
+                uint64_t offset = i * kBlock;
+                uint64_t size = std::min<uint64_t>(kBlock, total - offset);
+                std::string md5 = crypto::md5FileHex(localPath, offset, size);
+                if (md5.empty()) return callback("cloud/upload/read_failed");
+                blockList.push_back(md5);
+            }
+
+            const std::string targetPath = path;
+
+            // The upload endpoints only accept the netdisk (client) identity:
+            // with the browser UA /api/precreate answers errno -6 (which is
+            // "not allowed", not "name taken").
+            nxkit::HttpClient uploadHttp;
+            {
+                std::lock_guard<std::mutex> lock(cookieMutex);
+                uploadHttp = http;
+            }
+            uploadHttp.setHeader("User-Agent", kPanUA);
+
+            nxkit::HttpResult pre = uploadHttp.post(
+                std::string(kPanBase) + "/api/precreate",
+                {{"method", "precreate"},
+                 {"app_id", kPanAppId},
+                 {"bdstoken", token},
+                 {"clienttype", "0"},
+                 {"web", "1"},
+                 {"channel", "chunlei"}},
+                {{"path", targetPath},
+                 {"size", std::to_string(total)},
+                 {"isdir", "0"},
+                 {"autoinit", "1"},
+                 {"block_list", blockList.dump()}});
+            if (!pre.ok) {
+                uploadLog("baidu: precreate http error " + pre.error);
+                return callback("cloud/upload/failed");
+            }
+            json preRoot = json::parse(pre.body, nullptr, false);
+            const int preErrno =
+                preRoot.is_discarded() ? -1 : preRoot.value("errno", -1);
+            uploadLog("baidu: precreate status=" + std::to_string(pre.status) +
+                      " errno=" + std::to_string(preErrno) + " body=" +
+                      snippet(pre.body));
+            if (preRoot.is_discarded()) return callback("cloud/upload/failed");
+            if (preErrno != 0) {
+                uploadLog("baidu: precreate refused errno=" +
+                          std::to_string(preErrno));
+                return callback("cloud/upload/failed");
+            }
+
+            const std::string uploadId = preRoot.value("uploadid", "");
+            // A non-zero return_type (1 or 2 depending on the API revision)
+            // means the server already had every block (rapid upload).
+            if (uploadId.empty()) {
+                if (preRoot.value("return_type", 0) != 0) {
+                    if (progress) progress(total, total);
+                    return callback("");
+                }
+                return callback("cloud/upload/failed");
+            }
+
+            std::string cookie;
+            {
+                std::lock_guard<std::mutex> lock(cookieMutex);
+                cookie = http.cookie();
+            }
+            const std::string headerBlock =
+                "Cookie: " + cookie + "\r\nUser-Agent: " + kPanUA +
+                "\r\nReferer: https://pan.baidu.com/disk/main\r\n"
+                "Origin: https://pan.baidu.com\r\n";
+            const std::string uploadBase =
+                std::string("https://d.pcs.baidu.com") +
+                "/rest/2.0/pcs/superfile2?method=upload&app_id=" + kPanAppId +
+                "&bdstoken=" + token +
+                "&channel=chunlei&clienttype=0&web=1&uploadsign=0&path=" +
+                cpr::util::urlEncode(targetPath) + "&uploadid=" + uploadId;
+
+            uint64_t uploaded = 0;
+            for (const json& item : preRoot.value("block_list", json::array())) {
+                if (!item.is_number_integer()) continue;
+                int index = item.get<int>();
+                uint64_t offset = (uint64_t)index * kBlock;
+                if (offset >= total) continue;
+                uint64_t size = std::min<uint64_t>(kBlock, total - offset);
+
+                std::string block((size_t)size, '\0');
+                FILE* file = fopen(localPath.c_str(), "rb");
+                if (!file) return callback("cloud/upload/read_failed");
+                bool readOk =
+                    fseeko(file, (off_t)offset, SEEK_SET) == 0 &&
+                    fread(&block[0], 1, block.size(), file) == block.size();
+                fclose(file);
+                if (!readOk) return callback("cloud/upload/read_failed");
+
+                UploadResponse response;
+                if (!uploadFileMultipart(
+                        uploadBase + "&partseq=" + std::to_string(index),
+                        headerBlock, "file", "blob", block.data(), block.size(),
+                        &response)) {
+                    uploadLog("baidu: part " + std::to_string(index) +
+                              " failed status=" +
+                              std::to_string(response.status) + " body=" +
+                              snippet(response.body));
+                    return callback("cloud/upload/failed");
+                }
+                // PCS answers 200 even when a block is rejected, so check the
+                // payload: a part without its md5 never reached the drive and
+                // the commit below would fail with errno 10.
+                json partRoot = json::parse(response.body, nullptr, false);
+                bool partOk = !partRoot.is_discarded() &&
+                              partRoot.value("errno", 0) == 0 &&
+                              partRoot.contains("md5");
+                uploadLog("baidu: part " + std::to_string(index) +
+                          " status=" + std::to_string(response.status) +
+                          " body=" + snippet(response.body));
+                if (!partOk) return callback("cloud/upload/failed");
+                uploaded += size;
+                if (progress) progress(uploaded, total);
+            }
+
+            nxkit::HttpResult create = uploadHttp.post(
+                std::string(kPanBase) + "/api/create",
+                {{"a", "commit"},
+                 {"channel", "chunlei"},
+                 {"web", "1"},
+                 {"app_id", kPanAppId},
+                 {"clienttype", "0"},
+                 {"isdir", "0"},
+                 {"bdstoken", token}},
+                {{"path", targetPath},
+                 {"size", std::to_string(total)},
+                 {"isdir", "0"},
+                 {"block_list", blockList.dump()},
+                 {"uploadid", uploadId}});
+            if (!create.ok) {
+                uploadLog("baidu: create http error " + create.error);
+                return callback("cloud/upload/failed");
+            }
+            json createRoot = json::parse(create.body, nullptr, false);
+            uploadLog("baidu: create status=" + std::to_string(create.status) +
+                      " body=" + snippet(create.body));
+            if (createRoot.is_discarded() ||
+                createRoot.value("errno", -1) != 0)
+                return callback("cloud/upload/failed");
+
+            if (progress) progress(total, total);
+            callback("");
+        });
+    });
 }
 
 }  // namespace cloud

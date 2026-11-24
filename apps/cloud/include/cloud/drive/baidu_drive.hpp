@@ -61,6 +61,11 @@ public:
     void move(const std::vector<std::string>& fileIds,
               const std::string& targetDirId, SimpleCallback callback) override;
 
+    bool supportsUpload() const override { return true; }
+    void uploadFile(const std::string& parentId, const std::string& name,
+                    const std::string& localPath, UploadCallback progress,
+                    SimpleCallback callback) override;
+
     std::string playbackHeaders() const override;
     std::string thumbnailHeaders() const override;
     std::string downloadHeaders() const;

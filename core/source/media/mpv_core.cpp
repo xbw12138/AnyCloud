@@ -189,6 +189,18 @@ void MPVCore::init() {
     mpv_set_option_string(mpv, "idle", "yes");
     mpv_set_option_string(mpv, "loop-file", "no");
     mpv_set_option_string(mpv, "osd-level", "0");
+    // The app draws its own OSD. mpv's builtin Lua scripts (osc/stats/console)
+    // push osd-overlay commands, which build a libass renderer on a script
+    // thread; reloading a failing stream (Baidu direct links retry) raced with
+    // that and crashed inside ass_renderer_init. Nothing here uses them.
+    mpv_set_option_string(mpv, "osc", "no");
+    mpv_set_option_string(mpv, "osd-bar", "no");
+    mpv_set_option_string(mpv, "load-scripts", "no");
+    // These two are builtin Lua scripts and ignored by load-scripts=no. Both
+    // create osd-overlay objects, which is the libass renderer that crashed
+    // while a failing stream was being reloaded.
+    mpv_set_option_string(mpv, "load-stats-overlay", "no");
+    mpv_set_option_string(mpv, "load-osd-console", "no");
     mpv_set_option_string(mpv, "video-timing-offset", "0");  // 60fps
     mpv_set_option_string(mpv, "keep-open", "yes");
     mpv_set_option_string(mpv, "hr-seek", "yes");

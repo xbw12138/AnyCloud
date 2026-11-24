@@ -4,11 +4,15 @@
 
 #include "cloud/drive/quark_drive.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <ctime>
 #include <exception>
 #include <random>
+#include <vector>
 
+#include "cloud/util/crypto.hpp"
+#include "cloud/util/file_upload.hpp"
 #include "cpr/async.h"
 #include "nxkit/auth_store.hpp"
 
@@ -544,6 +548,348 @@ void QuarkDrive::move(const std::vector<std::string>& fileIds,
               [callback](const json&, const std::string& error) {
                   callback(error);
               });
+}
+
+// -----------------------------------------------------------------------------
+// Upload (pre -> update/hash -> per-part OSS auth + PUT -> complete -> finish)
+// -----------------------------------------------------------------------------
+
+namespace {
+
+const char* kOssUserAgent =
+    "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit";
+
+std::string mimeTypeFor(const std::string& name) {
+    size_t dot = name.find_last_of('.');
+    if (dot == std::string::npos) return "application/octet-stream";
+    std::string ext = name.substr(dot + 1);
+    for (char& c : ext)
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+    if (ext == "mp4" || ext == "m4v") return "video/mp4";
+    if (ext == "mkv") return "video/x-matroska";
+    if (ext == "avi") return "video/x-msvideo";
+    if (ext == "mov") return "video/quicktime";
+    if (ext == "webm") return "video/webm";
+    if (ext == "ts") return "video/mp2t";
+    if (ext == "mp3") return "audio/mpeg";
+    if (ext == "flac") return "audio/flac";
+    if (ext == "m4a") return "audio/mp4";
+    if (ext == "wav") return "audio/wav";
+    if (ext == "srt" || ext == "ass" || ext == "ssa") return "text/plain";
+    if (ext == "jpg" || ext == "jpeg") return "image/jpeg";
+    if (ext == "png") return "image/png";
+    if (ext == "gif") return "image/gif";
+    if (ext == "webp") return "image/webp";
+    if (ext == "pdf") return "application/pdf";
+    if (ext == "epub") return "application/epub+zip";
+    if (ext == "txt") return "text/plain";
+    if (ext == "zip") return "application/zip";
+    return "application/octet-stream";
+}
+
+/// "Wed, 21 Oct 2015 07:28:00 GMT"
+std::string httpDateNow() {
+    time_t now = time(nullptr);
+    struct tm tmv {};
+    gmtime_r(&now, &tmv);
+    char buffer[64];
+    strftime(buffer, sizeof(buffer), "%a, %d %b %Y %H:%M:%S GMT", &tmv);
+    return buffer;
+}
+
+/// base64 of the raw MD5 digest (OSS Content-MD5 format).
+std::string md5Base64(const std::string& data) {
+    std::string hex = crypto::md5Hex(data);
+    std::string raw;
+    raw.reserve(hex.size() / 2);
+    for (size_t i = 0; i + 1 < hex.size(); i += 2) {
+        auto nibble = [](char c) -> int {
+            return c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10;
+        };
+        raw += (char)((nibble(hex[i]) << 4) | nibble(hex[i + 1]));
+    }
+    return crypto::base64Encode(raw);
+}
+
+std::string stripTrailingSlashes(std::string value) {
+    while (!value.empty() && value.back() == '/') value.pop_back();
+    return value;
+}
+
+std::string snippet(const std::string& body, size_t limit = 200) {
+    return body.size() <= limit ? body : body.substr(0, limit) + "...";
+}
+
+}  // namespace
+
+void QuarkDrive::uploadFile(const std::string& parentId, const std::string& name,
+                            const std::string& localPath, UploadCallback progress,
+                            SimpleCallback callback) {
+    const uint64_t total = localFileSize(localPath);
+    FILE* probe = fopen(localPath.c_str(), "rb");
+    if (!probe) return callback("cloud/upload/file_missing");
+    fclose(probe);
+
+    const std::string mime = mimeTypeFor(name);
+    cpr::async([this, parentId, name, localPath, total, mime, progress,
+                callback] {
+        const std::string base = "https://drive-pc.quark.cn/1/clouddrive";
+
+        nxkit::HttpClient client;
+        {
+            std::lock_guard<std::mutex> lock(cookieMutex);
+            client = http;
+        }
+
+        // Synchronous helper: keeps the cookie jar in sync on every reply.
+        auto post = [this, &client](const std::string& path, const json& body,
+                                    json& root) -> std::string {
+            nxkit::HttpResult result =
+                client.postJson(path, kCommonQuery, body);
+            if (!result.cookies.empty()) {
+                std::string merged;
+                {
+                    std::lock_guard<std::mutex> lock(cookieMutex);
+                    http.setCookie(
+                        nxkit::mergeCookies(http.cookie(), result.cookies));
+                    merged = http.cookie();
+                }
+                client.setCookie(merged);
+                saveCookie();
+            }
+            if (!result.ok) {
+                netDebugLog("quark: upload post " + path + " status=" +
+                            std::to_string(result.status) +
+                            " body=" + snippet(result.body));
+                return result.error.empty()
+                           ? "http " + std::to_string(result.status)
+                           : result.error;
+            }
+            root = result.json();
+            if (root.is_discarded()) return "invalid response";
+            if (root.value("code", -1) != 0)
+                return root.value("message", std::string("upload failed"));
+            return "";
+        };
+
+        const int64_t nowMs = (int64_t)time(nullptr) * 1000;
+
+        // 1. Pre-upload: reserves the object and returns the OSS location.
+        json pre;
+        std::string error = post(base + "/file/upload/pre",
+                                 {{"ccp_hash_update", true},
+                                  {"dir_name", ""},
+                                  {"file_name", name},
+                                  {"format_type", mime},
+                                  {"l_created_at", nowMs},
+                                  {"l_updated_at", nowMs},
+                                  {"pdir_fid", parentId},
+                                  {"size", total}},
+                                 pre);
+        if (!error.empty()) {
+            netDebugLog("quark: pre failed " + error);
+            return callback("cloud/upload/failed");
+        }
+        json data = pre.value("data", json::object());
+        const std::string taskId = data.value("task_id", "");
+        const std::string uploadId = data.value("upload_id", "");
+        const std::string objKey = data.value("obj_key", "");
+        const std::string bucket = data.value("bucket", "");
+        const std::string uploadUrl = data.value("upload_url", "");
+        json authInfo = data.contains("auth_info") ? data["auth_info"] : json();
+        json callbackInfo =
+            data.contains("callback") ? data["callback"] : json();
+        uint64_t partSize = pre.value("metadata", json::object())
+                                 .value("part_size", (uint64_t)0);
+        if (partSize == 0) partSize = 4ULL * 1024 * 1024;
+        if (uploadId.empty() || objKey.empty() || bucket.empty() ||
+            uploadUrl.empty()) {
+            netDebugLog("quark: pre missing fields body=" + snippet(pre.dump()));
+            return callback("cloud/upload/failed");
+        }
+        netDebugLog("quark: pre ok bucket=" + bucket + " host=" + uploadUrl +
+                    " part=" + std::to_string(partSize));
+
+        // 2. Whole-file hash: the server may already know this content.
+        std::string md5 = crypto::md5FileHex(localPath, 0, total);
+        std::string sha1 = crypto::sha1FileHex(localPath);
+        if (md5.empty() || sha1.empty())
+            return callback("cloud/upload/read_failed");
+        netDebugLog("quark: hash computed md5=" + md5);
+        json hashRoot;
+        error = post(base + "/file/update/hash",
+                     {{"md5", md5}, {"sha1", sha1}, {"task_id", taskId}},
+                     hashRoot);
+        if (!error.empty()) {
+            netDebugLog("quark: hash failed " + error);
+            return callback("cloud/upload/failed");
+        }
+        netDebugLog("quark: hash accepted");
+        if (hashRoot.value("data", json::object()).value("finish", false)) {
+            if (progress) progress(total, total);
+            return callback("");
+        }
+
+        // The OSS host is the bucket sub-domain of the pre-upload URL.
+        std::string host = uploadUrl;
+        if (host.compare(0, 8, "https://") == 0)
+            host = host.substr(8);
+        else if (host.compare(0, 7, "http://") == 0)
+            host = host.substr(7);
+        host = stripTrailingSlashes(host);
+        const std::string ossPath = bucket + "." + host + "/" + objKey;
+        const std::string ossBase = "https://" + ossPath;
+        netDebugLog("quark: oss host=" + bucket + "." + host);
+
+        // 3. Upload every part: each one needs its own OSS signature.
+        std::vector<std::string> etags;
+        const uint64_t parts = total == 0 ? 1 : (total + partSize - 1) / partSize;
+        for (uint64_t i = 0; i < parts; i++) {
+            const uint64_t number = i + 1;
+            const std::string date = httpDateNow();
+            const std::string authMeta =
+                "PUT\n\n" + mime + "\n" + date + "\nx-oss-date:" + date +
+                "\nx-oss-user-agent:" + kOssUserAgent + "\n/" + bucket + "/" +
+                objKey + "?partNumber=" + std::to_string(number) +
+                "&uploadId=" + uploadId;
+            json authRoot;
+            error = post(base + "/file/upload/auth",
+                         {{"auth_info", authInfo},
+                          {"auth_meta", authMeta},
+                          {"task_id", taskId}},
+                         authRoot);
+            if (!error.empty()) {
+                netDebugLog("quark: auth part " + std::to_string(number) +
+                            " failed " + error);
+                return callback("cloud/upload/failed");
+            }
+            const std::string authKey =
+                authRoot.value("data", json::object()).value("auth_key", "");
+            if (authKey.empty()) {
+                netDebugLog("quark: auth part " + std::to_string(number) +
+                            " empty body=" + snippet(authRoot.dump()));
+                return callback("cloud/upload/failed");
+            }
+
+            const std::string headers =
+                "Authorization: " + authKey + "\r\nContent-Type: " + mime +
+                "\r\nReferer: https://pan.quark.cn/\r\nx-oss-date: " + date +
+                "\r\nx-oss-user-agent: " + kOssUserAgent + "\r\n";
+            const uint64_t partOffset = i * partSize;
+            const uint64_t partBytes =
+                std::min(partSize, total > partOffset ? total - partOffset : 0);
+            UploadResponse response;
+            bool ok = false;
+            // Parts are idempotent: retry over https, then once over plain
+            // http (the console's mbedtls stack stalls on these hosts after
+            // the interim 100 response).
+            static const char* kSchemes[] = {"https", "https", "http"};
+            for (int attempt = 0; attempt < 3 && !ok; attempt++) {
+                const std::string attemptUrl =
+                    std::string(kSchemes[attempt]) + "://" + ossPath +
+                    "?partNumber=" + std::to_string(number) +
+                    "&uploadId=" + uploadId;
+                netDebugLog("quark: put begin part " + std::to_string(number) +
+                            " try=" + std::to_string(attempt + 1) + " bytes=" +
+                            std::to_string(partBytes));
+                ok = uploadFileRaw(
+                    attemptUrl, "PUT", headers, localPath,
+                    [progress, partOffset, total](uint64_t sent, uint64_t) {
+                        if (progress) progress(partOffset + sent, total);
+                    },
+                    &response, partOffset, partSize);
+                if (!ok)
+                    netDebugLog("quark: put failed part " + std::to_string(number) +
+                                " try=" + std::to_string(attempt + 1) +
+                                " status=" + std::to_string(response.status) +
+                                " error=" + response.error +
+                                " body=" + snippet(response.body));
+            }
+            if (!ok) {
+                netDebugLog("quark: part " + std::to_string(number) +
+                            " gave up status=" +
+                            std::to_string(response.status) + " error=" +
+                            response.error);
+                return callback("cloud/upload/failed");
+            }
+            netDebugLog("quark: put ok part " + std::to_string(number));
+            // A missing ETag makes CompleteMultipartUpload reject the commit.
+            auto etag = response.headers.find("etag");
+            if (etag == response.headers.end()) {
+                netDebugLog("quark: part " + std::to_string(number) +
+                            " has no ETag");
+            }
+            etags.push_back(etag == response.headers.end() ? std::string()
+                                                           : etag->second);
+        }
+
+        // 4. CompleteMultipartUpload: an XML body signed like the parts.
+        std::string xml =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            "<CompleteMultipartUpload>\n";
+        for (size_t i = 0; i < etags.size(); i++)
+            xml += "<Part><PartNumber>" + std::to_string(i + 1) +
+                   "</PartNumber><ETag>" + etags[i] + "</ETag></Part>";
+        xml += "\n</CompleteMultipartUpload>";
+
+        const std::string contentMd5 = md5Base64(xml);
+        const std::string callbackB64 =
+            crypto::base64Encode(callbackInfo.dump());
+        const std::string date = httpDateNow();
+        const std::string commitMeta =
+            "POST\n" + contentMd5 + "\napplication/xml\n" + date +
+            "\nx-oss-callback:" + callbackB64 + "\nx-oss-date:" + date +
+            "\nx-oss-user-agent:" + kOssUserAgent + "\n/" + bucket + "/" +
+            objKey + "?uploadId=" + uploadId;
+        json commitAuth;
+        error = post(base + "/file/upload/auth",
+                     {{"auth_info", authInfo},
+                      {"auth_meta", commitMeta},
+                      {"task_id", taskId}},
+                     commitAuth);
+        if (!error.empty()) {
+            netDebugLog("quark: commit auth failed " + error);
+            return callback("cloud/upload/failed");
+        }
+        const std::string commitKey =
+            commitAuth.value("data", json::object()).value("auth_key", "");
+        if (commitKey.empty()) {
+            netDebugLog("quark: commit auth empty body=" +
+                        snippet(commitAuth.dump()));
+            return callback("cloud/upload/failed");
+        }
+
+        const std::string commitHeaders =
+            "Authorization: " + commitKey + "\r\nContent-MD5: " + contentMd5 +
+            "\r\nContent-Type: application/xml\r\nReferer: "
+            "https://pan.quark.cn/\r\nx-oss-callback: " +
+            callbackB64 + "\r\nx-oss-date: " + date +
+            "\r\nx-oss-user-agent: " + kOssUserAgent + "\r\n";
+        UploadResponse commitResponse;
+        if (!uploadRawBody(ossBase + "?uploadId=" + uploadId, "POST",
+                           commitHeaders, xml, &commitResponse)) {
+            netDebugLog("quark: commit status=" +
+                        std::to_string(commitResponse.status) + " body=" +
+                        snippet(commitResponse.body));
+            return callback("cloud/upload/failed");
+        }
+        netDebugLog("quark: commit ok status=" +
+                    std::to_string(commitResponse.status) + " body=" +
+                    snippet(commitResponse.body));
+
+        // 5. Let the drive register the finished object.
+        json finish;
+        error = post(base + "/file/upload/finish",
+                     {{"obj_key", objKey}, {"task_id", taskId}}, finish);
+        if (!error.empty()) {
+            netDebugLog("quark: finish failed " + error + " body=" +
+                        snippet(finish.dump()));
+            return callback("cloud/upload/failed");
+        }
+
+        if (progress) progress(total, total);
+        callback("");
+    });
 }
 
 }  // namespace cloud

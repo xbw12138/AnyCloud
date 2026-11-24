@@ -16,13 +16,19 @@
 #include <sys/stat.h>
 
 #include <borealis/core/thread.hpp>
+#include <borealis/views/image.hpp>
 
 #include "cloud/drive/local_provider.hpp"
 #include "cloud/pages/player_page.hpp"
+#include "cloud/pages/text_reader.hpp"
 #include "cloud/ui/popup.hpp"
 #include "cloud/util/zip_extract.hpp"
 #include "cpr/async.h"
 #include "nxkit/ui/auto_tab_frame.hpp"
+
+#ifdef CLOUD_HAS_MUPDF
+#include "cloud/pages/pdf_viewer.hpp"
+#endif
 
 using namespace brls::literals;
 
@@ -114,6 +120,26 @@ std::string stateText(DownloadState state) {
     return "cloud/download/queued"_i18n;
 }
 
+std::string kindText(TransferKind kind) {
+    return kind == TransferKind::Upload ? "cloud/transfer/upload"_i18n
+                                        : "cloud/transfer/download"_i18n;
+}
+
+/// Upload failures surface as provider error codes; show a readable message
+/// while keeping the generic text for anything that is already human sized.
+std::string transferErrorText(const DownloadTask& task) {
+    if (task.kind != TransferKind::Upload) return task.error;
+    if (task.error == "cloud/upload/file_missing")
+        return "cloud/upload/msg_file_missing"_i18n;
+    if (task.error == "cloud/upload/read_failed")
+        return "cloud/upload/msg_read_failed"_i18n;
+    if (task.error == "cloud/upload/auth")
+        return "cloud/upload/msg_auth"_i18n;
+    if (task.error.rfind("cloud/upload/", 0) == 0)
+        return "cloud/upload/msg_failed"_i18n;
+    return task.error;
+}
+
 /// Labels measure to NaN width when their text is empty, which corrupts the
 /// whole row's layout, so empty labels are collapsed instead.
 void setLabelText(brls::Label* label, const std::string& text) {
@@ -184,7 +210,8 @@ std::string uniqueDir(const std::string& base) {
 
 /// Action the A button performs on a finished row.
 std::string finishedRowHint(const DownloadTask& task) {
-    if (task.state == DownloadState::Done && !task.path.empty()) {
+    if (task.kind == TransferKind::Download &&
+        task.state == DownloadState::Done && !task.path.empty()) {
         MediaKind kind = localFileFor(task).mediaKind();
         if (kind == MediaKind::Video || kind == MediaKind::Audio)
             return "cloud/download/play"_i18n;
@@ -956,7 +983,9 @@ void DownloadPage::updateRow(Row& row, const DownloadTask& task,
     switch (task.state) {
         case DownloadState::Queued:
             headline = stateText(task.state);
-            if (task.total > 0) detail = formatBytes(task.total);
+            detail = joinMeta({kindText(task.kind),
+                               task.total > 0 ? formatBytes(task.total)
+                                              : std::string()});
             break;
 
         case DownloadState::Running: {
@@ -999,18 +1028,24 @@ void DownloadPage::updateRow(Row& row, const DownloadTask& task,
 
         case DownloadState::Done:
             headline = stateText(task.state);
-            detail = joinMeta({formatBytes(task.total), task.path});
+            detail = task.kind == TransferKind::Upload
+                         ? joinMeta({kindText(task.kind),
+                                     formatBytes(task.total)})
+                         : joinMeta({formatBytes(task.total), task.path});
             break;
 
         case DownloadState::Failed:
             headline = stateText(task.state);
-            detail = task.error;
+            detail = transferErrorText(task);
             detailIsError = true;
             break;
 
         case DownloadState::Cancelled:
             headline = stateText(task.state);
-            detail = joinMeta({formatBytes(task.total), task.path});
+            detail = task.kind == TransferKind::Upload
+                         ? joinMeta({kindText(task.kind),
+                                     formatBytes(task.total)})
+                         : joinMeta({formatBytes(task.total), task.path});
             break;
     }
 
@@ -1102,15 +1137,55 @@ void DownloadPage::runRowAction(uint64_t id) {
         return;
     }
 
-    if (task->state == DownloadState::Done && !task->path.empty()) {
+    if (task->kind == TransferKind::Download &&
+        task->state == DownloadState::Done && !task->path.empty()) {
         MediaKind kind = localFileFor(*task).mediaKind();
         if (kind == MediaKind::Video || kind == MediaKind::Audio) {
             this->playLocal(*task, kind == MediaKind::Audio);
             return;
         }
+        if (kind == MediaKind::Image) {
+            brls::Box* viewer = new brls::Box(brls::Axis::COLUMN);
+            viewer->setGrow(1);
+            viewer->setFocusable(true);
+            viewer->setHideHighlight(true);
+            viewer->setBackgroundColor(nvgRGBA(0, 0, 0, 255));
+
+            brls::Image* image = new brls::Image();
+            image->setGrow(1);
+            image->setScalingType(brls::ImageScalingType::FIT);
+            image->setImageFromFile(task->path);
+            viewer->addView(image);
+
+            viewer->registerAction("", brls::BUTTON_B,
+                                   [](brls::View*) -> bool {
+                                       brls::Application::popActivity();
+                                       return true;
+                                   });
+            brls::Application::pushActivity(new brls::Activity(viewer));
+            return;
+        }
         if (lowerExtension(task->name) == "zip" ||
             lowerExtension(task->path) == "zip") {
             this->confirmExtract(*task);
+            return;
+        }
+
+        std::string extension = lowerExtension(task->name);
+        if (extension.empty()) extension = lowerExtension(task->path);
+        if (extension == "epub" || extension == "txt" ||
+            extension == "md" || extension == "markdown") {
+            brls::Application::pushActivity(
+                new brls::Activity(new TextReaderPage(task->path)));
+            return;
+        }
+        if (extension == "pdf") {
+#ifdef CLOUD_HAS_MUPDF
+            brls::Application::pushActivity(
+                new brls::Activity(new PdfViewerPage(task->path)));
+#else
+            brls::Application::notify("cloud/pdf/unsupported"_i18n);
+#endif
             return;
         }
     }
@@ -1334,7 +1409,7 @@ void DownloadPage::showDetails(uint64_t id) {
         addInfoRow(card, "cloud/download/path"_i18n, task.path,
                    theme["cloud/text"]);
     if (!task.error.empty())
-        addInfoRow(card, "cloud/download/error"_i18n, task.error,
+        addInfoRow(card, "cloud/download/error"_i18n, transferErrorText(task),
                    stateColor(DownloadState::Failed));
 
     // Divider then the actions.

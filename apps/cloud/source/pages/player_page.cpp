@@ -583,6 +583,13 @@ void PlayerPage::playOriginal() {
                 // drives (Baidu's CDN rejects the netdisk UA with 403 but the
                 // same link works with a browser identity).
                 std::string playback = this->provider->playbackHeaders();
+                // Some Baidu CDN nodes still require the account cookie and
+                // netdisk UA; keep the download headers as a one-shot retry.
+                this->fallbackHeaders =
+                    (this->provider->id() == "baidu" && !headers.empty())
+                        ? headers
+                        : std::string();
+                this->triedFallbackHeaders = false;
                 this->startUrl(url, playback.empty() ? headers : playback);
             });
         });
@@ -613,6 +620,8 @@ bool PlayerPage::playAt(size_t index) {
     this->streamIndex = -1;
     this->lastUrl.clear();
     this->lastHeaders.clear();
+    this->fallbackHeaders.clear();
+    this->triedFallbackHeaders = false;
     this->triedSoftwareDec = false;
     this->statusOverride = false;
     // Subtitles belong to the video that was playing, not to the new one.
@@ -730,6 +739,9 @@ void PlayerPage::startUrl(const std::string& url, const std::string& headers) {
     this->lastUrl = url;
     this->lastHeaders = headers;
     this->triedSoftwareDec = false;
+    this->loadedOnce = false;
+    this->probedUrl = false;
+    this->triedHttpFallback = false;
     auto& mpv = nxkit::MPVCore::instance();
     mpv.stop();
     mpv.reset();
@@ -758,7 +770,8 @@ void PlayerPage::startUrl(const std::string& url, const std::string& headers) {
 /// same url with software decoding usually still plays them.
 void PlayerPage::retryWithSoftwareDec() {
 #ifdef NXKIT_WITH_MPV
-    if (this->triedSoftwareDec || this->lastUrl.empty()) return;
+    if (this->triedSoftwareDec || !this->loadedOnce || this->lastUrl.empty())
+        return;
     this->triedSoftwareDec = true;
     logDebug("player: retrying with software decoding");
     auto& mpv = nxkit::MPVCore::instance();
@@ -781,6 +794,7 @@ void PlayerPage::onMpvEvent(int event) {
             break;
         case MpvEventEnum::MPV_LOADED: {
             this->setStatus("");
+            this->loadedOnce = true;
             auto& mpv = nxkit::MPVCore::instance();
             // The demuxer knows the container's audio / subtitle tracks now.
             this->scanTracks();
@@ -810,8 +824,86 @@ void PlayerPage::onMpvEvent(int event) {
             break;
         }
         case MpvEventEnum::MPV_FILE_ERROR:
+            // Baidu links signed for the web session are sometimes refused
+            // when fetched with the browser identity; retry once with the
+            // download headers (netdisk UA + cookie) before giving up.
+            if (!this->triedFallbackHeaders && !this->fallbackHeaders.empty() &&
+                !this->lastUrl.empty()) {
+                this->triedFallbackHeaders = true;
+                logDebug("player: retrying with provider download headers");
+                this->setStatus("cloud/player/loading"_i18n);
+                this->startUrl(this->lastUrl, this->fallbackHeaders);
+                break;
+            }
+            // ffmpeg's mbedtls read hits EOF on the Baidu CDN while the same
+            // link answers fine over plain http, so retry it downgraded once.
+            if (!this->triedHttpFallback && !this->lastUrl.empty() &&
+                this->lastUrl.rfind("https://", 0) == 0 &&
+                this->lastUrl.find("baidupcs.com") != std::string::npos) {
+                this->triedHttpFallback = true;
+                std::string httpUrl = "http://" + this->lastUrl.substr(8);
+                std::string httpHeaders =
+                    this->provider ? this->provider->playbackHeaders()
+                                   : this->lastHeaders;
+                if (httpHeaders.empty()) httpHeaders = this->lastHeaders;
+                logDebug("player: retrying baidu link over http");
+                this->setStatus("cloud/player/loading"_i18n);
+                this->startUrl(httpUrl, httpHeaders);
+                break;
+            }
             this->setStatus("cloud/player/error"_i18n);
             this->showOsd(false);
+            if (!this->probedUrl && !this->lastUrl.empty() &&
+                this->lastUrl.rfind("http", 0) == 0) {
+                this->probedUrl = true;
+                const std::string url = this->lastUrl;
+                const std::string headers = this->lastHeaders;
+                const std::string altHeaders =
+                    this->provider ? this->provider->playbackHeaders()
+                                   : std::string();
+                cpr::async([this, alive = this->alive, url, headers,
+                            altHeaders] {
+                    auto fetch = [&url](const std::string& fields) {
+                        nxkit::HttpResult out;
+                        try {
+                            nxkit::HttpClient client;
+                            // Only the status matters; do not pull the film.
+                            client.setHeaderBlock(fields +
+                                                  "Range: bytes=0-1023\r\n");
+                            client.setTimeout(20000);
+                            out = client.get(url);
+                        } catch (const std::exception& e) {
+                            out.ok = false;
+                            out.error = e.what();
+                        }
+                        return out;
+                    };
+                    nxkit::HttpResult result = fetch(headers);
+                    logDebug("player: probe status=" +
+                             std::to_string(result.status) +
+                             (result.error.empty()
+                                  ? " body=" + result.body.substr(0, 120)
+                                  : " error=" + result.error));
+                    if (!altHeaders.empty() && altHeaders != headers) {
+                        nxkit::HttpResult alt = fetch(altHeaders);
+                        logDebug("player: probe playback status=" +
+                                 std::to_string(alt.status) +
+                                 (alt.error.empty()
+                                      ? " body=" + alt.body.substr(0, 120)
+                                      : " error=" + alt.error));
+                        if (alt.status >= 200 && alt.status < 300)
+                            result = alt;
+                    }
+                    if (result.status <= 0) return;
+                    const std::string text =
+                        "cloud/player/error"_i18n + "  HTTP " +
+                        std::to_string(result.status);
+                    brls::sync([this, alive, text] {
+                        if (!*alive) return;
+                        this->setStatus(text);
+                    });
+                });
+            }
             this->retryWithSoftwareDec();
             break;
         case MpvEventEnum::END_OF_FILE:

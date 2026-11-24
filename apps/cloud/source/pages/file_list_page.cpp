@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -33,9 +34,11 @@
 #include "cloud/main_activity.hpp"
 #include "cloud/pages/image_viewer.hpp"
 #include "cloud/pages/local_dir_page.hpp"
+#include "cloud/pages/local_file_picker.hpp"
 #include "cloud/pages/login_page.hpp"
 #include "cloud/pages/player_page.hpp"
 #include "cloud/ui/cloud_empty_view.hpp"
+#include "cloud/ui/popup.hpp"
 #include "nxkit/http_client.hpp"
 #include "nxkit/http_log.hpp"
 #include "nxkit/paths.hpp"
@@ -49,6 +52,8 @@ namespace cloud {
 static const char* kIconViewList  = "\uE8EF";  // view_list
 static const char* kIconViewGrid  = "\uE8F0";  // view_module
 static const char* kIconNewFolder = "\uE2C7";  // create_new_folder
+static const char* kIconUpload    = "\uE2C6";  // file_upload
+static const char* kIconRefresh   = "\uE5D5";  // refresh
 
 static void listLog(const std::string& line) {
 #ifdef __SWITCH__
@@ -1034,6 +1039,10 @@ void FileListPage::willAppear(bool resetState) {
         this->provider = manager.current();
         this->pathStack.clear();
         this->pathStack.emplace_back(this->provider->rootId(), "");
+        if (this->uploadButton)
+            this->uploadButton->setVisibility(
+                this->provider->supportsUpload() ? brls::Visibility::VISIBLE
+                                                 : brls::Visibility::GONE);
         this->refresh();
         return;
     }
@@ -1102,9 +1111,38 @@ void FileListPage::setup() {
     });
     titleRow->addView(this->viewToggle);
 
+    brls::Button* refresh = new brls::Button();
+    refresh->setStyle(&brls::BUTTONSTYLE_BORDERLESS);
+    refresh->setFontSize(24);
+    refresh->setMargins(0, 0, 0, 12);
+    refresh->setText(kIconRefresh);
+    refresh->registerClickAction([this](brls::View*) {
+        this->refresh();
+        return true;
+    });
+    titleRow->addView(refresh);
+
     // Y is taken by the sort menu now, so creating a folder needs a visible
     // entry point of its own (only meaningful in the real browser).
     if (this->mode == Mode::Browse) {
+        // Always built, because the page outlives a drive switch: the icon is
+        // only shown for providers that actually implement upload (see
+        // willAppear, which re-evaluates it for the new provider).
+        brls::Button* upload = new brls::Button();
+        this->uploadButton = upload;
+        upload->setStyle(&brls::BUTTONSTYLE_BORDERLESS);
+        upload->setFontSize(24);
+        upload->setMargins(0, 0, 0, 16);
+        upload->setText(kIconUpload);
+        upload->setVisibility(this->provider && this->provider->supportsUpload()
+                                  ? brls::Visibility::VISIBLE
+                                  : brls::Visibility::GONE);
+        upload->registerClickAction([this](brls::View*) {
+            this->promptUpload();
+            return true;
+        });
+        titleRow->addView(upload);
+
         brls::Button* newFolder = new brls::Button();
         newFolder->setStyle(&brls::BUTTONSTYLE_BORDERLESS);
         newFolder->setFontSize(24);
@@ -1298,6 +1336,11 @@ void FileListPage::refresh() {
         this->refreshRecent();
         return;
     }
+    if (this->uploadButton)
+        this->uploadButton->setVisibility(
+            this->provider && this->provider->supportsUpload()
+                ? brls::Visibility::VISIBLE
+                : brls::Visibility::GONE);
 
     bool loggedIn = this->provider->isLoggedIn();
     this->wasLoggedIn = loggedIn;
@@ -1720,6 +1763,37 @@ void FileListPage::promptMakeDir() {
                 });
         },
         "cloud/files/mkdir"_i18n, "", 64);
+}
+
+void FileListPage::promptUpload() {
+    if (!this->provider || !this->provider->supportsUpload()) {
+        brls::Application::notify("cloud/upload/unsupported"_i18n);
+        return;
+    }
+    auto* picker = new LocalFilePickerPage(
+        [this](const std::string& path, const std::string& name) {
+            this->startUpload(path, name);
+        });
+    brls::Application::pushActivity(picker);
+}
+
+void FileListPage::startUpload(const std::string& localPath,
+                               const std::string& name) {
+    if (!this->provider || !this->provider->supportsUpload()) {
+        brls::Application::notify("cloud/upload/unsupported"_i18n);
+        return;
+    }
+    // Uploads run in the shared transfer manager so the progress keeps going
+    // after this page is closed and shows up next to the downloads.
+    auto alive = this->alive;
+    DownloadManager::instance().upload(
+        this->provider, this->pathStack.back().first, localPath, name,
+        [alive, this](bool ok) {
+            if (!*alive || !ok) return;
+            // The new file is part of this folder now.
+            this->refresh();
+        });
+    brls::Application::notify("cloud/upload/queued"_i18n);
 }
 
 void FileListPage::pickCurrentDirectory() {

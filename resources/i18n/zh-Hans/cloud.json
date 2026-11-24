@@ -2,7 +2,7 @@
   "tab": {
     "recent": "最近观看",
     "files": "全部文件",
-    "downloads": "下载管理",
+    "downloads": "传输",
     "shared": "分享文件",
     "favorites": "云收藏",
     "profile": "我的",
@@ -76,7 +76,7 @@
     "provider_missing": "该资源所属网盘当前不可用"
   },
   "download": {
-    "title": "下载管理",
+    "title": "传输管理",
     "action": "下载到本机…",
     "choose_dir": "选择下载目录",
     "current_dir": "当前目录",
@@ -85,15 +85,15 @@
     "new_dir": "新建文件夹",
     "new_dir_failed": "无法创建文件夹",
     "dir_empty": "该目录没有子文件夹",
-    "empty": "暂无下载任务",
-    "empty_hint": "在文件列表按 X，选择「下载到本机…」",
+    "empty": "暂无传输任务",
+    "empty_hint": "在文件列表按 X 下载到本机，或用上传按钮传到网盘",
     "clear": "清除已结束",
     "started": "已加入下载队列",
     "cancel": "取消",
     "queued": "等待中",
-    "running": "下载中",
+    "running": "传输中",
     "done": "已完成",
-    "failed": "下载失败",
+    "failed": "传输失败",
     "cancelled": "已取消",
     "select": "多选",
     "choose": "选择",
@@ -128,6 +128,10 @@
     "extract_failed": "解压失败：",
     "extract_cancelled": "已取消解压",
     "extract_busy": "这个压缩包正在解压中"
+  },
+  "transfer": {
+    "download": "下载",
+    "upload": "上传"
   },
   "soon": {
     "title": "即将上线",
@@ -180,6 +184,28 @@
     "prev": "上一张",
     "next": "下一张"
   },
+  "reader": {
+    "loading": "加载中…",
+    "error": "无法打开该电子书",
+    "empty": "没有可阅读的文本",
+    "page": "第 {0} / {1} 页",
+    "prev": "上一页",
+    "next": "下一页",
+    "prev_chapter": "上一章",
+    "next_chapter": "下一章",
+    "hint": "←/→ 或 L/R 翻页  ZL/ZR 切换章节  B 返回"
+  },
+  "pdf": {
+    "loading": "渲染中…",
+    "error": "无法打开该 PDF",
+    "page": "第 {0} / {1} 页",
+    "prev": "上一页",
+    "next": "下一页",
+    "zoom_in": "放大",
+    "zoom_out": "缩小",
+    "unsupported": "当前版本不支持查看 PDF",
+    "hint": "L/R 翻页  Y 放大  X 缩小  放大后方向键平移  B 返回"
+  },
   "log": {
     "title": "网络日志",
     "hint": "↑/↓ 选择  A 查看全文  X 刷新  Y 清空  B 返回",
@@ -224,7 +250,7 @@
     "features_hint": "↑/↓ 浏览  B 返回",
     "controls": "操作指南",
     "controls_hint": "↑/↓ 浏览  B 返回",
-    "features_intro": "把网盘搬上 Switch：浏览文件、在线播放、查看图片、下载到本机，并内置网络日志方便排查问题。顶部栏右侧会一直显示当前网盘。",
+    "features_intro": "把网盘搬上 Switch：浏览文件、上传与下载、在线播放、查看图片、打开 PDF / EPUB，并内置网络日志方便排查问题。顶部栏右侧会一直显示当前网盘。",
     "feature": {
       "drives": { "title": "多网盘支持", "detail": "夸克、阿里、115 与百度网盘，随时一键切换" },
       "login": { "title": "扫码登录", "detail": "手机 App 扫码登录，凭据只保存在本机" },
@@ -236,7 +262,9 @@
       "subtitle": { "title": "外挂字幕", "detail": "自动匹配同目录 SRT / ASS / SSA / VTT 字幕" },
       "quality": { "title": "清晰度切换", "detail": "多码率视频按 Y 选择原画、4K、超清或高清" },
       "photo": { "title": "图片查看", "detail": "原图加载，L / R 翻页，B 返回列表" },
+      "document": { "title": "文档阅读", "detail": "直接打开 PDF 与 EPUB，分页阅读，EPUB 支持插图与自动换行" },
       "download": { "title": "下载到本机", "detail": "保存到 SD 卡，支持队列、多选与失败重试" },
+      "upload": { "title": "上传到网盘", "detail": "把 SD 卡里的文件上传到网盘，进度与结果在传输管理查看" },
       "account": { "title": "账号总览", "detail": "头像、昵称、会员状态与容量占用一目了然" },
       "cache": { "title": "封面缓存", "detail": "缩略图落盘保存，再次进入立即显示" },
       "log": { "title": "网络日志", "detail": "内置请求记录与状态，排查问题无需电脑" }
@@ -254,7 +282,7 @@
       "files_back": "返回上一级目录",
       "files_more": "更多操作：重命名、删除、移动、下载到本机",
       "files_sort": "切换排序方式（修改时间 / 名称）",
-      "downloads_title": "下载管理",
+      "downloads_title": "传输管理",
       "downloads_select": "进入 / 退出多选，选中后可批量删除",
       "downloads_delete": "删除当前记录或选中的记录",
       "downloads_detail": "查看任务详情；失败的任务可重试",
@@ -274,6 +302,12 @@
       "image_title": "图片查看",
       "image_page": "上一张 / 下一张",
       "image_back": "返回文件列表",
+      "document_title": "文档阅读",
+      "document_page": "上一页 / 下一页",
+      "document_move": "PDF 放大后平移画面；EPUB 为翻页",
+      "document_zoom": "PDF 放大 / 缩小",
+      "document_chapter": "EPUB 上一章 / 下一章",
+      "document_back": "返回文件列表",
       "log_title": "网络日志",
       "log_open": "查看请求详情与响应内容",
       "log_refresh": "刷新日志列表",
@@ -283,7 +317,7 @@
     "about": "关于",
     "about_title": "AnyCloud",
     "about_tagline": "Nintendo Switch 云盘客户端",
-    "about_text": "运行在 Nintendo Switch 上的云盘浏览器与播放器：支持夸克、阿里云盘、115 与百度网盘，可浏览文件、在线播放视频、加载字幕、查看图片，并内置网络日志便于排查问题。",
+    "about_text": "运行在 Nintendo Switch 上的云盘浏览器与播放器：支持夸克、阿里云盘、115 与百度网盘，可浏览文件、上传与下载、在线播放视频、加载字幕、查看图片、打开 PDF / EPUB，并内置网络日志便于排查问题。",
     "about_hint": "↑/↓ 浏览  B 返回",
     "about_developer": "开发者",
     "about_stack": "技术栈",
@@ -302,5 +336,21 @@
     "hint": "请前往「应用商店」更新后重启应用",
     "up_to_date": "已是最新版本",
     "failed": "检查更新失败："
+  },
+  "upload": {
+    "choose_file": "选择要上传的文件",
+    "current_dir": "当前位置",
+    "enter": "打开文件夹",
+    "select": "选择此文件",
+    "up": "返回上级目录",
+    "dir_empty": "这个文件夹里没有文件",
+    "uploading": "正在上传",
+    "upload_done": "上传完成",
+    "queued": "已加入传输列表",
+    "unsupported": "当前网盘暂不支持上传",
+    "msg_file_missing": "找不到本地文件",
+    "msg_read_failed": "读取本地文件失败",
+    "msg_auth": "登录状态已失效，请重新登录",
+    "msg_failed": "上传失败，请稍后重试"
   }
 }

@@ -139,6 +139,26 @@ public:
                         SimpleCallback callback) = 0;
     virtual void move(const std::vector<std::string>& fileIds,
                       const std::string& targetDirId, SimpleCallback callback) = 0;
+
+    // --- Upload --------------------------------------------------------------
+    using UploadCallback = std::function<void(uint64_t sent, uint64_t total)>;
+
+    /// Whether this drive implements uploadFile(). Providers without a working
+    /// upload API hide the upload entry instead of failing at the last step.
+    virtual bool supportsUpload() const { return false; }
+
+    /// Uploads one local file into `parentId`. Progress and completion
+    /// callbacks fire on a worker thread.
+    virtual void uploadFile(const std::string& parentId,
+                            const std::string& name,
+                            const std::string& localPath,
+                            UploadCallback progress, SimpleCallback callback) {
+        (void)parentId;
+        (void)name;
+        (void)localPath;
+        (void)progress;
+        callback("cloud/upload/unsupported");
+    }
 };
 
 }  // namespace cloud

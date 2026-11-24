@@ -5,8 +5,10 @@
 #include "cloud/util/crypto.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <random>
+#include <sys/types.h>
 #include <vector>
 
 namespace cloud::crypto {
@@ -111,14 +113,14 @@ void md5Update(Md5Context& ctx, const unsigned char* data, size_t size) {
     }
 }
 
-std::string md5HexImpl(const std::string& data) {
-    Md5Context ctx;
-    md5Update(ctx, (const unsigned char*)data.data(), data.size());
+std::string md5Finish(Md5Context& ctx) {
+    // The message length must be the one collected so far: the padding below
+    // runs through md5Update and would otherwise end up in the length field.
+    uint64_t bits = ctx.bits;
     unsigned char padding[64] = {0x80};
     size_t padLen = ctx.buffered < 56 ? 56 - ctx.buffered : 120 - ctx.buffered;
     md5Update(ctx, padding, padLen);
     unsigned char length[8];
-    uint64_t bits = ctx.bits;
     for (int i = 0; i < 8; i++) length[i] = (unsigned char)(bits >> (8 * i));
     md5Update(ctx, length, 8);
 
@@ -137,6 +139,12 @@ std::string md5HexImpl(const std::string& data) {
         out += hex[byte & 0xf];
     }
     return out;
+}
+
+std::string md5HexImpl(const std::string& data) {
+    Md5Context ctx;
+    md5Update(ctx, (const unsigned char*)data.data(), data.size());
+    return md5Finish(ctx);
 }
 
 // -----------------------------------------------------------------------------
@@ -208,14 +216,13 @@ void sha1Update(Sha1Context& ctx, const unsigned char* data, size_t size) {
     }
 }
 
-std::string sha1HexImpl(const std::string& data) {
-    Sha1Context ctx;
-    sha1Update(ctx, (const unsigned char*)data.data(), data.size());
+std::string sha1Finish(Sha1Context& ctx) {
+    // Same as md5Finish: capture the real length before adding the padding.
+    uint64_t bits = ctx.bits;
     unsigned char padding[64] = {0x80};
     size_t padLen = ctx.buffered < 56 ? 56 - ctx.buffered : 120 - ctx.buffered;
     sha1Update(ctx, padding, padLen);
     unsigned char length[8];
-    uint64_t bits = ctx.bits;
     for (int i = 0; i < 8; i++) length[i] = (unsigned char)(bits >> (56 - 8 * i));
     sha1Update(ctx, length, 8);
 
@@ -230,6 +237,12 @@ std::string sha1HexImpl(const std::string& data) {
         }
     }
     return out;
+}
+
+std::string sha1HexImpl(const std::string& data) {
+    Sha1Context ctx;
+    sha1Update(ctx, (const unsigned char*)data.data(), data.size());
+    return sha1Finish(ctx);
 }
 
 // -----------------------------------------------------------------------------
@@ -547,6 +560,64 @@ std::string base64Decode(const std::string& data) {
 std::string md5Hex(const std::string& data) { return md5HexImpl(data); }
 
 std::string sha1Hex(const std::string& data) { return sha1HexImpl(data); }
+
+namespace {
+
+/// Feeds `size` bytes starting at `offset` of `path` into `update`. Returns
+/// false when the file cannot be opened or read.
+template <typename UpdateFn>
+bool hashFile(const std::string& path, uint64_t offset, uint64_t size,
+              UpdateFn update) {
+    FILE* file = fopen(path.c_str(), "rb");
+    if (!file) return false;
+    if (offset > 0 && fseeko(file, (off_t)offset, SEEK_SET) != 0) {
+        fclose(file);
+        return false;
+    }
+    std::vector<unsigned char> buffer(1 << 20);
+    uint64_t remaining = size;
+    bool ok = true;
+    while (remaining > 0) {
+        size_t want = (size_t)std::min<uint64_t>(remaining, buffer.size());
+        size_t got = fread(buffer.data(), 1, want, file);
+        if (got == 0) {
+            ok = false;
+            break;
+        }
+        update(buffer.data(), got);
+        remaining -= got;
+    }
+    fclose(file);
+    return ok;
+}
+
+}  // namespace
+
+std::string md5FileHex(const std::string& path, uint64_t offset, uint64_t size) {
+    Md5Context ctx;
+    if (!hashFile(path, offset, size, [&ctx](const unsigned char* data,
+                                             size_t length) {
+            md5Update(ctx, data, length);
+        }))
+        return std::string();
+    return md5Finish(ctx);
+}
+
+std::string sha1FileHex(const std::string& path) {
+    FILE* probe = fopen(path.c_str(), "rb");
+    if (!probe) return std::string();
+    fseeko(probe, 0, SEEK_END);
+    off_t size = ftello(probe);
+    fclose(probe);
+    if (size < 0) return std::string();
+    Sha1Context ctx;
+    if (!hashFile(path, 0, (uint64_t)size, [&ctx](const unsigned char* data,
+                                                  size_t length) {
+            sha1Update(ctx, data, length);
+        }))
+        return std::string();
+    return sha1Finish(ctx);
+}
 
 std::string rc4(const std::string& key, const std::string& data) {
     unsigned char s[256];

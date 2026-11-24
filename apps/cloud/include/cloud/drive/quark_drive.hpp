@@ -58,6 +58,11 @@ public:
     void move(const std::vector<std::string>& fileIds,
               const std::string& targetDirId, SimpleCallback callback) override;
 
+    bool supportsUpload() const override { return true; }
+    void uploadFile(const std::string& parentId, const std::string& name,
+                    const std::string& localPath, UploadCallback progress,
+                    SimpleCallback callback) override;
+
     /// Extra http headers a player must attach when streaming the original
     /// file or a transcoded m3u8 (cookie + referer + user agent).
     std::string playbackHeaders() const override;

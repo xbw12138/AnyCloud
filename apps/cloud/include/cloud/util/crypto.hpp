@@ -20,6 +20,12 @@ std::string base64Decode(const std::string& data);
 std::string md5Hex(const std::string& data);
 std::string sha1Hex(const std::string& data);
 
+/// Streaming hash over a local file (used by the upload APIs, which need the
+/// MD5 of each 4 MB slice / the SHA1 of the whole file without loading it).
+/// Returns an empty string when the file cannot be read.
+std::string md5FileHex(const std::string& path, uint64_t offset, uint64_t size);
+std::string sha1FileHex(const std::string& path);
+
 /// RC4 stream cipher (Baidu's download sign).
 std::string rc4(const std::string& key, const std::string& data);
 

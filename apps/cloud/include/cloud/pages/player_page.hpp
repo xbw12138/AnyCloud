@@ -158,7 +158,21 @@ private:
 
     std::string lastUrl;
     std::string lastHeaders;
+    /// Alternate headers (e.g. Baidu's netdisk UA + cookie) tried once when
+    /// the initial browser identity is rejected by the CDN.
+    std::string fallbackHeaders;
+    bool triedFallbackHeaders = false;
     bool triedSoftwareDec = false;
+    /// Set once the current url produced a loaded file. Software decoding is
+    /// only worth retrying in that case: for a rejected network url the same
+    /// link fails the same way and would just reload/teardown mpv again.
+    bool loadedOnce = false;
+    /// One-shot HTTP probe for a url mpv could not open: mpv only logs
+    /// "failed to open", the status code is what tells a 403 from a timeout.
+    bool probedUrl = false;
+    /// Baidu CDN links are retried over plain http once: ffmpeg's mbedtls
+    /// read fails on that host while the same url answers over http.
+    bool triedHttpFallback = false;
     // Seconds to jump to once the stream is loaded (0 = play from start).
     double resumePosition = 0;
 

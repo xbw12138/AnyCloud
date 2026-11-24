@@ -73,7 +73,7 @@ endif()
 # -----------------------------------------------------------------------------
 project(AnyCloud C CXX)
 set(VERSION_MAJOR "1")
-set(VERSION_MINOR "7")
+set(VERSION_MINOR "8")
 set(VERSION_REVISION "0")
 set(NXKIT_RESOURCES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/resources)
 set(NXKIT_CORE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/core)

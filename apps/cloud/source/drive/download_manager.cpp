@@ -24,6 +24,7 @@
 #include <curl/curl.h>
 
 #include <borealis/core/application.hpp>
+#include <borealis/core/thread.hpp>
 #include <nlohmann/json.hpp>
 
 #include "nxkit/http_client.hpp"
@@ -690,6 +691,10 @@ void DownloadManager::loadHistory() {
         state->directory = item.value("directory", std::string());
         state->path = item.value("path", std::string());
         state->error = item.value("error", std::string());
+        state->kind = item.value("kind", 0) == 1 ? TransferKind::Upload
+                                                 : TransferKind::Download;
+        state->localPath = item.value("local_path", std::string());
+        state->parentId = item.value("parent_id", std::string());
         if (state->name.empty()) continue;
 
         int raw = item.value("state", (int)DownloadState::Failed);
@@ -724,6 +729,9 @@ void DownloadManager::saveHistory() {
             item["provider"] = task->provider;
             item["directory"] = task->directory;
             item["path"] = task->path;
+            item["kind"] = task->kind == TransferKind::Upload ? 1 : 0;
+            item["local_path"] = task->localPath;
+            item["parent_id"] = task->parentId;
             item["received"] = task->received;
             item["total"] = task->total;
             if (task->state == DownloadState::Queued ||
@@ -766,6 +774,99 @@ uint64_t DownloadManager::start(std::shared_ptr<DriveProvider> provider,
     // visible history entry.
     this->saveHistory();
     return state->id;
+}
+
+uint64_t DownloadManager::upload(std::shared_ptr<DriveProvider> provider,
+                                 const std::string& parentId,
+                                 const std::string& localPath,
+                                 const std::string& name,
+                                 std::function<void(bool)> onDone) {
+    auto state = std::make_shared<TaskState>();
+    state->kind = TransferKind::Upload;
+    state->name = name;
+    state->provider = provider ? provider->name() : std::string();
+    state->parentId = parentId;
+    state->localPath = localPath;
+    state->providerRef = provider;
+    state->onUploadDone = std::move(onDone);
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        state->id = nextId++;
+        tasks.push_back(state);
+    }
+
+    this->launchUpload(state);
+    this->saveHistory();
+    return state->id;
+}
+
+void DownloadManager::launchUpload(const std::shared_ptr<TaskState>& state) {
+    auto provider = state->providerRef;
+    if (!provider) {
+        this->update(state, [](TaskState& task) {
+            task.state = DownloadState::Failed;
+            task.error = "missing drive provider";
+        });
+        return;
+    }
+
+    struct stat info;
+    if (stat(state->localPath.c_str(), &info) != 0 || !S_ISREG(info.st_mode)) {
+        this->update(state, [](TaskState& task) {
+            task.state = DownloadState::Failed;
+            task.error = "cloud/upload/file_missing";
+        });
+        return;
+    }
+
+    const std::string name = state->name;
+    const std::string localPath = state->localPath;
+    const std::string parentId = state->parentId;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        state->total = (uint64_t)info.st_size;
+        state->received = 0;
+        state->error.clear();
+        state->state = DownloadState::Running;
+    }
+
+    auto last = std::make_shared<std::chrono::steady_clock::time_point>(
+        std::chrono::steady_clock::now());
+    provider->uploadFile(
+        parentId, name, localPath,
+        [state, last](uint64_t sent, uint64_t total) {
+            // The providers report per chunk; the list only refreshes twice a
+            // second, so drop the rest instead of hammering the mutex.
+            auto now = std::chrono::steady_clock::now();
+            if (now - *last < std::chrono::milliseconds(200)) return;
+            *last = now;
+            DownloadManager::instance().update(
+                state, [&](TaskState& task) {
+                    if (total > 0) task.total = total;
+                    task.received = sent;
+                });
+        },
+        [state](const std::string& error) {
+            DownloadManager::instance().update(state, [&](TaskState& task) {
+                if (state->cancelled.load()) {
+                    task.state = DownloadState::Cancelled;
+                    return;
+                }
+                if (!error.empty()) {
+                    task.state = DownloadState::Failed;
+                    task.error = error;
+                    return;
+                }
+                task.received = task.total;
+                task.state = DownloadState::Done;
+            });
+            if (state->onUploadDone) {
+                auto done = state->onUploadDone;
+                state->onUploadDone = nullptr;
+                const bool ok = error.empty();
+                brls::sync([done, ok] { done(ok); });
+            }
+        });
 }
 
 void DownloadManager::launch(const std::shared_ptr<TaskState>& state) {
@@ -1026,7 +1127,12 @@ void DownloadManager::retry(uint64_t id) {
             break;
         }
     }
-    if (target) this->launch(target);
+    if (target) {
+        if (target->kind == TransferKind::Upload)
+            this->launchUpload(target);
+        else
+            this->launch(target);
+    }
 }
 
 void DownloadManager::remove(uint64_t id) {
@@ -1094,11 +1200,13 @@ std::vector<DownloadTask> DownloadManager::snapshot() const {
         info.id = task->id;
         info.name = task->name;
         info.provider = task->provider;
-        info.path = task->path;
+        info.path = task->kind == TransferKind::Upload ? task->localPath
+                                                       : task->path;
         info.received = task->received;
         info.total = task->total;
         info.state = task->state;
         info.error = task->error;
+        info.kind = task->kind;
         info.retryable = task->providerRef != nullptr;
         result.push_back(std::move(info));
     }

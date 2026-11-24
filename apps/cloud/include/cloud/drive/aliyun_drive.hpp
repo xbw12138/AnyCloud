@@ -68,6 +68,11 @@ public:
     void move(const std::vector<std::string>& fileIds,
               const std::string& targetDirId, SimpleCallback callback) override;
 
+    bool supportsUpload() const override { return true; }
+    void uploadFile(const std::string& parentId, const std::string& name,
+                    const std::string& localPath, UploadCallback progress,
+                    SimpleCallback callback) override;
+
 private:
     /// Refreshes the access token when it is missing or about to expire.
     /// Runs on a worker thread.

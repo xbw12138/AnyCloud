@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <ctime>
 
+#include "cloud/util/crypto.hpp"
+#include "cloud/util/file_upload.hpp"
 #include "cloud/util/text_encoding.hpp"
 #include "cpr/async.h"
 #include "nxkit/auth_store.hpp"
@@ -45,8 +47,11 @@ void netDebugLog(const std::string& line) {
     fclose(file);
 }
 
-void runAsync(std::function<void()> task) {
-    cpr::async([task = std::move(task)]() mutable {
+std::string snippet(const std::string& body, size_t limit = 200) {
+    return body.size() <= limit ? body : body.substr(0, limit) + "...";
+}
+
+void runAsync(std::function<void()> task) {    cpr::async([task = std::move(task)]() mutable {
         try {
             task();
         } catch (const std::exception& e) {
@@ -493,6 +498,7 @@ bool AliyunDrive::apiPost(const std::string& path, const json& body,
         netDebugLog("aliyun: post " + path + " failed status=" +
                     std::to_string(result.status) + " body=" +
                     result.body.substr(0, 300) + " err=" + result.error);
+        root = result.json();
         error = result.error.empty() ? ("http " + std::to_string(result.status))
                                      : result.error;
         return false;
@@ -578,7 +584,7 @@ void AliyunDrive::accountInfo(
                 drive = driveIdValue();
             }
             nxkit::HttpResult quota = client.postJson(
-                "/v2/drive/get", {{"drive_id", drive}}, json::object());
+                "/v2/drive/get", {}, {{"drive_id", drive}});
             netDebugLog("aliyun: space status=" + std::to_string(quota.status) +
                         " body=" + quota.body.substr(0, 300));
             if (quota.ok) {
@@ -897,8 +903,16 @@ void AliyunDrive::remove(const std::vector<std::string>& fileIds,
             long status = 0;
             json body = {{"drive_id", drive}, {"file_id", id}};
             if (!apiPost("/v2/recyclebin/trash", body, token, root, status,
-                         error))
+                         error)) {
+                // Already in the recycle bin (stale row, or the delete was
+                // pressed twice): the end state is what the user asked for.
+                std::string code =
+                    root.is_object() ? root.value("code", "") : "";
+                if (code.rfind("NotFound", 0) == 0) continue;
                 return callback(error);
+            }
+            netDebugLog("aliyun: trash status=" + std::to_string(status) +
+                        " id=" + id);
         }
         callback("");
     });
@@ -928,6 +942,121 @@ void AliyunDrive::move(const std::vector<std::string>& fileIds,
                          error))
                 return callback(error);
         }
+        callback("");
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Upload (web API: file/create -> PUT parts -> file/complete)
+// -----------------------------------------------------------------------------
+
+void AliyunDrive::uploadFile(const std::string& parentId, const std::string& name,
+                             const std::string& localPath,
+                             UploadCallback progress, SimpleCallback callback) {
+    uint64_t total = localFileSize(localPath);
+    FILE* probe = fopen(localPath.c_str(), "rb");
+    if (!probe) return callback("cloud/upload/file_missing");
+    fclose(probe);
+
+    runAsync([this, parentId, name, localPath, total, progress, callback] {
+        std::string token;
+        std::string error;
+        if (!ensureToken(token, error)) return callback(error);
+        std::string drive = driveIdValue();
+        if (drive.empty()) {
+            refreshIdentity(token);
+            drive = driveIdValue();
+        }
+        if (drive.empty()) return callback("cloud/upload/failed");
+
+        // create needs the whole-file SHA1 for rapid upload / integrity.
+        std::string hash =
+            total == 0 ? crypto::sha1Hex("") : crypto::sha1FileHex(localPath);
+        if (hash.empty()) return callback("cloud/upload/read_failed");
+
+        json root;
+        long status = 0;
+        json firstPart = json::object(
+            {{"part_number", 1}, {"part_size", total}});
+        json body = {{"drive_id", drive},
+                     {"parent_file_id", parentId.empty() ? "root" : parentId},
+                     {"name", name},
+                     {"type", "file"},
+                     {"size", total},
+                     {"content_hash", hash},
+                     {"content_hash_name", "sha1"},
+                     {"proof_version", "v1"},
+                     {"check_name_mode", "auto_rename"},
+                     {"part_info_list", json::array({firstPart})}};
+        // v2 is the endpoint this API revision actually exposes (the v1
+        // openFile alias answers 404); keep it as a fallback for older hosts.
+        if (!apiPost("/adrive/v2/file/create", body, token, root, status,
+                     error) &&
+            status == 404)
+            apiPost("/adrive/v1.0/openFile/create", body, token, root, status,
+                    error);
+        if (root.is_discarded() || status < 200 || status >= 300)
+            return callback(isAuthError(error) ? error
+                                               : "cloud/upload/failed");
+        netDebugLog("aliyun: create status=" + std::to_string(status) +
+                    " body=" + snippet(root.dump()));
+
+        const std::string fileId = root.value("file_id", "");
+        const std::string uploadId = root.value("upload_id", "");
+        if (root.value("rapid_upload", false) || uploadId.empty()) {
+            if (progress) progress(total, total);
+            return callback("");
+        }
+
+        json parts = root.value("part_info_list", json::array());
+        if (parts.empty()) return callback("cloud/upload/failed");
+
+        // The part URL is signed with an empty Content-Type, so sending one
+        // makes OSS reject the request with 403 SignatureDoesNotMatch.
+        const std::string headerBlock;
+        for (const json& part : parts) {
+            std::string url = part.value("upload_url", "");
+            if (url.empty()) continue;
+            uint64_t number = part.value("part_number", 1);
+            // Parts are 1-based and each carries its own number; the API
+            // normally hands back one part for a single-request upload.
+            uint64_t partSize = part.value("part_size", (uint64_t)0);
+            if (partSize == 0)
+                partSize = (total + parts.size() - 1) / parts.size();
+            uint64_t offset = (number - 1) * partSize;
+            UploadResponse response;
+            bool ok = uploadFileRaw(
+                url, "PUT", headerBlock, localPath,
+                [progress, total](uint64_t sent, uint64_t) {
+                    if (progress && total > 0) progress(sent, total);
+                },
+                &response, offset, partSize);
+            // 409 means the part is already stored server side.
+            if (!ok && response.status != 409) {
+                netDebugLog("aliyun: part " + std::to_string(number) +
+                            " PUT status=" + std::to_string(response.status) +
+                            " body=" + snippet(response.body));
+                return callback("cloud/upload/failed");
+            }
+        }
+
+        json complete;
+        long completeStatus = 0;
+        json completeBody = {
+            {"drive_id", drive}, {"file_id", fileId}, {"upload_id", uploadId}};
+        if (!apiPost("/adrive/v2/file/complete", completeBody, token, complete,
+                     completeStatus, error) &&
+            completeStatus == 404)
+            apiPost("/adrive/v1.0/openFile/complete", completeBody, token,
+                    complete, completeStatus, error);
+        if (completeStatus < 200 || completeStatus >= 300) {
+            netDebugLog("aliyun: complete status=" +
+                        std::to_string(completeStatus) + " body=" +
+                        snippet(complete.dump()));
+            return callback(isAuthError(error) ? error
+                                               : "cloud/upload/failed");
+        }
+        if (progress) progress(total, total);
         callback("");
     });
 }
