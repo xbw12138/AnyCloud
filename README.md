@@ -22,6 +22,16 @@
 
 桌面版额外提供下载目录选择等调试便利。
 
+## 安装
+
+| 渠道 | 说明 |
+| --- | --- |
+| [GitHub Releases](https://github.com/xbw12138/AnyCloud/releases) | 下载 `cloud.nro`，放到 SD 卡的 `switch/` 目录，用 hbmenu 启动 |
+| [Homebrew App Store](https://hb-app.store/) | 已提交审核，通过后可直接在商店内搜索 AnyCloud 安装与更新 |
+| 自建商店 [ecfun.cc](https://ecfun.cc) | 应用内「检查更新」也读取这里的最新版本 |
+
+> 需要已破解（Atmosphere）的主机。首次运行需联网并登录网盘账号。
+
 ## 构建
 
 ### Switch
@@ -103,8 +113,13 @@ cmake/NXKitApp.cmake 应用打包宏（Switch 下生成 NACP + NRO）
 ## 版本与发布
 
 - 版本号在根 [CMakeLists.txt](CMakeLists.txt) 的 `VERSION_MAJOR/MINOR/REVISION`
-- 发布包上传到应用商店 `https://ecfun.cc`（`POST /api/v1/admin/apps/cloud/versions`，form 字段 `file` / `version` / `changelog`）；应用内「检查更新」读取同一接口的 `latest_version`
+- 发布包上传到自建商店 `https://ecfun.cc`（`POST /api/v1/admin/apps/cloud/versions`，form 字段 `file` / `version` / `changelog`）；应用内「检查更新」读取同一接口的 `latest_version`
 - 商店详情里的功能介绍通过 `PUT /api/v1/admin/apps/cloud` 的 `description` 字段维护
+- GitHub Release 以版本号作 tag（如 `1.8.0`）并附上 `cloud.nro`；Homebrew App Store 上架后会按 Release 自动抓取新版本，无需重复提交表单
+
+## 许可证
+
+[MIT](LICENSE) © 2026 xbw12138
 
 ## 运行时数据
 
@@ -130,3 +145,4 @@ cmake/NXKitApp.cmake 应用打包宏（Switch 下生成 NACP + NRO）
 - NXKit 框架
 - [borealis](https://github.com/xfangfang/borealis) UI 库
 - [wiliwili](https://github.com/xfangfang/wiliwili) 的播放与构建方案参考
+- [MuPDF](https://mupdf.com/) 提供 PDF 渲染
