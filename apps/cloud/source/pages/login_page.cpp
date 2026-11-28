@@ -10,6 +10,7 @@
 #include <cstdio>
 
 #include "cloud/drive/drive_manager.hpp"
+#include "cloud/pages/smb_login_view.hpp"
 #include "nxkit/http_client.hpp"
 #include "nxkit/ui/qr_login_view.hpp"
 
@@ -49,6 +50,17 @@ private:
 LoginPage::LoginPage() {}
 
 brls::View* LoginPage::createContentView() {
+    // SMB has no QR code: the share form plays the role of the scan step.
+    auto provider = DriveManager::instance().current();
+    if (provider && provider->id() == "smb") {
+        brls::Box* page = new brls::Box(brls::Axis::COLUMN);
+        page->setGrow(1);
+        page->setAlignItems(brls::AlignItems::CENTER);
+        page->setJustifyContent(brls::JustifyContent::CENTER);
+        page->addView(new SmbLoginView());
+        return page;
+    }
+
     brls::Box* box = new brls::Box(brls::Axis::COLUMN);
     box->setGrow(1);
     box->setAlignItems(brls::AlignItems::CENTER);

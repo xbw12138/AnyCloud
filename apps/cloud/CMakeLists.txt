@@ -71,7 +71,11 @@ if(MUPDF_LIB AND MUPDF_THIRD_LIB AND MUPDF_INCLUDE_DIR)
             list(APPEND MUPDF_DEPS ${MUPDF_DEP_${dep}})
         endif()
     endforeach()
-    list(APPEND CLOUD_LIBS ${MUPDF_LIB} ${MUPDF_THIRD_LIB} ${MUPDF_DEPS})
+    # Link order matters: libmupdf-third.a bundles a HarfBuzz patched to
+    # allocate through MuPDF's fz_* hooks. Listing the portlibs HarfBuzz first
+    # keeps libass (mpv's subtitle renderer) on the normal one; otherwise
+    # ass_renderer_init crashes in fz_calloc_no_throw with a null context.
+    list(APPEND CLOUD_LIBS ${MUPDF_LIB} ${MUPDF_DEPS} ${MUPDF_THIRD_LIB})
     set(CLOUD_PDF_SOURCES source/pages/pdf_viewer.cpp)
     set(CLOUD_HAS_MUPDF ON)
 endif()
@@ -86,6 +90,10 @@ if(PLATFORM_SWITCH AND BUILTIN_NSP)
     add_subdirectory(${CMAKE_SOURCE_DIR}/scripts/switch-forwarder
                      ${CMAKE_BINARY_DIR}/forwarder)
 endif()
+
+# SMB drives: libsmb2 speaks the protocol, the app's own socket server serves
+# the localhost bridge that hands files to mpv / curl.
+list(APPEND CLOUD_LIBS smb2)
 
 nxkit_add_app(cloud
         TITLEID "0x010FF000FFFF0102"
@@ -105,7 +113,11 @@ nxkit_add_app(cloud
         source/drive/quark_drive.cpp
         source/drive/recent_store.cpp
         source/drive/playback_store.cpp
+        source/drive/smb_bridge.cpp
+        source/drive/smb_drive.cpp
+        source/drive/smb_session.cpp
         source/pages/login_page.cpp
+        source/pages/smb_login_view.cpp
         source/pages/file_list_page.cpp
         source/pages/downloads_page.cpp
         source/pages/local_dir_page.cpp

@@ -8,6 +8,7 @@
 #include "cloud/drive/baidu_drive.hpp"
 #include "cloud/drive/drive115.hpp"
 #include "cloud/drive/quark_drive.hpp"
+#include "cloud/drive/smb_drive.hpp"
 #include "nxkit/auth_store.hpp"
 
 namespace cloud {
@@ -52,6 +53,7 @@ void DriveManager::init() {
     registerProvider(std::make_shared<AliyunDrive>());
     registerProvider(std::make_shared<Drive115>());
     registerProvider(std::make_shared<BaiduDrive>());
+    registerProvider(std::make_shared<SmbDrive>());
     for (auto& provider : providerList) provider->loadCredentials();
 
     // Keep the drive the user picked last time.

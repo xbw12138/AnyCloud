@@ -352,5 +352,25 @@
     "msg_read_failed": "Could not read the local file",
     "msg_auth": "Session expired, please sign in again",
     "msg_failed": "Upload failed, please try again later"
+  },
+  "smb": {
+    "title": "Connect a network share",
+    "server": "Server",
+    "server_value": "e.g. 192.168.1.10",
+    "share": "Share",
+    "share_value": "e.g. media",
+    "user": "Username",
+    "user_value": "Leave empty for guest access",
+    "password": "Password",
+    "password_value": "Not set",
+    "connect": "Connect",
+    "connecting": "Connecting…",
+    "required": "Server and share are required",
+    "failed": "Connection failed",
+    "success": "Connected",
+    "hint": "↑/↓ Select  A Edit  X Connect  B Back",
+    "edit": "Edit",
+    "configure": "Set up network share",
+    "logout_confirm": "Disconnect this share? You will have to set up the connection again"
   }
 }

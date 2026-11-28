@@ -352,5 +352,25 @@
     "msg_read_failed": "读取本地文件失败",
     "msg_auth": "登录状态已失效，请重新登录",
     "msg_failed": "上传失败，请稍后重试"
+  },
+  "smb": {
+    "title": "连接网络共享",
+    "server": "服务器地址",
+    "server_value": "如 192.168.1.10",
+    "share": "共享名",
+    "share_value": "如 media",
+    "user": "用户名",
+    "user_value": "留空表示匿名访问",
+    "password": "密码",
+    "password_value": "未设置",
+    "connect": "连接共享",
+    "connecting": "正在连接…",
+    "required": "请填写服务器地址和共享名",
+    "failed": "连接失败",
+    "success": "连接成功",
+    "hint": "↑/↓ 选择  A 编辑  X 连接  B 返回",
+    "edit": "编辑",
+    "configure": "配置网络共享",
+    "logout_confirm": "确认退出连接？退出后需要重新配置连接"
   }
 }

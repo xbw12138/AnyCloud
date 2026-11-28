@@ -27,7 +27,7 @@ void showProviderPicker(std::function<void()> onChanged = {});
 class ProfilePage : public brls::Box {
 public:
     ProfilePage();
-    ~ProfilePage() override { *this->alive = false; }
+    ~ProfilePage() override;
 
     void willAppear(bool resetState = false) override;
 
@@ -71,6 +71,11 @@ private:
     /// apart from the current one.
     uint64_t accountRequest = 0;
     AccountInfo account;
+    /// Last drive generation this card was rendered for. A login page pops
+    /// back without re-triggering willAppear, so the card also watches the
+    /// generation through the run loop.
+    int driveGeneration = -1;
+    brls::VoidEvent::Subscription driveSubscription;
 };
 
 }  // namespace cloud

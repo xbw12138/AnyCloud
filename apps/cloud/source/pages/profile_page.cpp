@@ -288,7 +288,24 @@ ProfilePage::ProfilePage() {
     this->setPadding(24, 48, 24, 48);
     this->setBackgroundColor(theme["cloud/bg"]);
     this->build();
+    this->driveGeneration = DriveManager::instance().generation();
+    // Popping a login page back onto this tab does not fire willAppear, so the
+    // card also follows the drive generation and reloads as soon as a login
+    // flips the account state.
+    this->driveSubscription = brls::Application::getRunLoopEvent()->subscribe(
+        [this, alive = this->alive] {
+            if (!*alive) return;
+            auto& manager = DriveManager::instance();
+            if (manager.generation() == this->driveGeneration) return;
+            this->driveGeneration = manager.generation();
+            this->reload();
+        });
     this->refreshAccount();
+}
+
+ProfilePage::~ProfilePage() {
+    *this->alive = false;
+    brls::Application::getRunLoopEvent()->unsubscribe(this->driveSubscription);
 }
 
 void ProfilePage::build() {
@@ -603,7 +620,9 @@ void ProfilePage::applyAccount() {
         this->memberLabel->setVisibility(brls::Visibility::GONE);
         this->capacityBox->setVisibility(brls::Visibility::GONE);
         this->refreshTile->setVisibility(brls::Visibility::GONE);
-        this->accountTile->setTitle("cloud/profile/login"_i18n);
+        this->accountTile->setTitle(provider->id() == "smb"
+                                        ? "cloud/smb/configure"_i18n
+                                        : "cloud/profile/login"_i18n);
         return;
     }
 
@@ -666,7 +685,12 @@ void ProfilePage::logout() {
     auto provider = DriveManager::instance().current();
     if (!provider) return;
 
-    brls::Dialog* dialog = new brls::Dialog("cloud/profile/logout_confirm"_i18n);
+    // The SMB share has no QR step: signing out means configuring the
+    // connection again, so it must not talk about scanning a code.
+    std::string confirm = provider->id() == "smb"
+                              ? "cloud/smb/logout_confirm"_i18n
+                              : "cloud/profile/logout_confirm"_i18n;
+    brls::Dialog* dialog = new brls::Dialog(confirm);
     dialog->addButton("cloud/files/action/cancel"_i18n, []() {});
     dialog->addButton("cloud/profile/logout"_i18n, [this]() {
         auto current = DriveManager::instance().current();

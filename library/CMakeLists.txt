@@ -81,6 +81,24 @@ add_subdirectory(lunasvg EXCLUDE_FROM_ALL)
 # add mongoose
 add_subdirectory(mongoose EXCLUDE_FROM_ALL)
 
+# add libsmb2 (SMB2/CIFS client, used by the cloud app's SMB drive).
+# Kerberos/GSSAPI/DCE-RPC are not needed for plain NTLM or guest shares.
+set(ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(ENABLE_UTILS OFF CACHE BOOL "" FORCE)
+set(ENABLE_LIBKRB5 OFF CACHE BOOL "" FORCE)
+set(ENABLE_GSSAPI OFF CACHE BOOL "" FORCE)
+set(ENABLE_LIBDCERPC OFF CACHE BOOL "" FORCE)
+set(ENABLE_OPENSSL OFF CACHE BOOL "" FORCE)
+set(ENABLE_LIBQUIC OFF CACHE BOOL "" FORCE)
+set(ENABLE_RDMA OFF CACHE BOOL "" FORCE)
+add_subdirectory(libsmb2 EXCLUDE_FROM_ALL)
+
+# libsmb2's Switch branch is guarded by __SWITCH__, which the rest of the tree
+# only receives through borealis' public compile options.
+if (PLATFORM_SWITCH)
+    target_compile_definitions(smb2 PRIVATE __SWITCH__)
+endif ()
+
 # add borealis
 set(BRLS_USE_OPENCC ON)
 if (_USE_SHARED_LIB)

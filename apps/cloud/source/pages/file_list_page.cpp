@@ -1263,13 +1263,14 @@ void FileListPage::showLoginState() {
     // shared between the two layouts.
     if (this->grid) this->grid->setVisibility(brls::Visibility::GONE);
     this->emptyView->setVisibility(brls::Visibility::VISIBLE);
-    this->emptyView->setContent(CloudEmptyView::Mode::Login,
-                                "cloud/files/login_title"_i18n,
-                                "cloud/files/login_desc"_i18n);
+    bool isSmb = this->provider && this->provider->id() == "smb";
+    this->emptyView->setContent(
+        CloudEmptyView::Mode::Login,
+        isSmb ? "cloud/smb/title"_i18n : "cloud/files/login_title"_i18n,
+        isSmb ? "cloud/smb/user_value"_i18n : "cloud/files/login_desc"_i18n);
     this->emptyView->setAction(
-        "cloud/files/login_action"_i18n, [] {
-            brls::Application::pushActivity(new LoginPage());
-        });
+        isSmb ? "cloud/smb/configure"_i18n : "cloud/files/login_action"_i18n,
+        [] { brls::Application::pushActivity(new LoginPage()); });
     if (this->subtitleLabel)
         this->subtitleLabel->setText("cloud/files/not_signed_in"_i18n);
 
