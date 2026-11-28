@@ -520,7 +520,7 @@ const std::vector<ControlGroup>& controlGroups() {
          {
              {"A", "cloud/profile/keyguide/player_toggle"},
              {"← / →", "cloud/profile/keyguide/player_seek10"},
-             {"↑ / ↓", "cloud/profile/keyguide/player_seek60"},
+             {"↑ / ↓", "cloud/profile/keyguide/player_volume"},
              {"ZL / ZR", "cloud/profile/keyguide/player_seek30"},
              {"L / R", "cloud/profile/keyguide/player_episode"},
              {"X", "cloud/profile/keyguide/player_loop"},

@@ -85,6 +85,8 @@ private:
     void showPlayerMessage(const std::string& text);
     int messageToken = 0;
     void seekBy(int64_t seconds);
+    /// ↑ / ↓: volume, in 5% steps.
+    void adjustVolume(int delta);
     void showQualityMenu();
     void presentQualityMenu();
     /// L3: playback speed menu (0.5x - 2.0x).

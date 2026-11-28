@@ -377,14 +377,14 @@ PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
     this->registerAction(
         "", brls::BUTTON_DOWN,
         [this](brls::View*) -> bool {
-            this->seekBy(-60);
+            this->adjustVolume(-5);
             return true;
         },
         true, true);
     this->registerAction(
         "", brls::BUTTON_UP,
         [this](brls::View*) -> bool {
-            this->seekBy(60);
+            this->adjustVolume(5);
             return true;
         },
         true, true);
@@ -1142,6 +1142,23 @@ void PlayerPage::seekBy(int64_t seconds) {
     this->showOsd();
 #else
     (void)seconds;
+#endif
+}
+
+void PlayerPage::adjustVolume(int delta) {
+#ifdef NXKIT_WITH_MPV
+    auto& mpv = nxkit::MPVCore::instance();
+    if (mpv.isStopped()) return;
+    // VIDEO_VOLUME is updated synchronously by setVolume, unlike the observed
+    // volume property, so fast repeated presses still step one notch each.
+    int value = nxkit::MPVCore::VIDEO_VOLUME + delta;
+    if (value < 0) value = 0;
+    if (value > 100) value = 100;
+    mpv.setVolume(value);
+    this->showPlayerMessage("cloud/player/volume"_i18n + " " +
+                            std::to_string(value));
+#else
+    (void)delta;
 #endif
 }
 
