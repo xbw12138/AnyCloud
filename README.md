@@ -115,12 +115,17 @@ cmake/NXKitApp.cmake 应用打包宏（Switch 下生成 NACP + NRO）
 ## 版本与发布
 
 - 版本号在根 [CMakeLists.txt](CMakeLists.txt) 的 `VERSION_MAJOR/MINOR/REVISION`
-- 当前版本 `1.9.4`：「我的」页新增更新历史
+- 当前版本 `1.9.5`：播放页音量键改为调节系统音量
 - 发布包上传到自建商店 `https://ecfun.cc`（`POST /api/v1/admin/apps/cloud/versions`，form 字段 `file` / `version` / `changelog`）；应用内「检查更新」读取同一接口的 `latest_version`
 - 商店详情里的功能介绍通过 `PUT /api/v1/admin/apps/cloud` 的 `description` 字段维护
 - GitHub Release 以版本号作 tag（如 `1.8.0`）并附上 `cloud.nro`；Homebrew App Store 上架后会按 Release 自动抓取新版本，无需重复提交表单
 
 ## 更新日志
+
+### 1.9.5
+
+- 播放页 ↑/↓ 改为调节 **Switch 系统音量**（快速设置里的音量条），自动跟随
+  当前输出（扬声器 / 耳机 / 电视）；系统服务不可用时回退为只调播放器音量
 
 ### 1.9.4
 

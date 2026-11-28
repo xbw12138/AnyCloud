@@ -14,6 +14,10 @@
 
 #include <borealis/core/thread.hpp>
 
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
+
 #include "cloud/drive/playback_store.hpp"
 #include "cloud/drive/recent_store.hpp"
 #include "cloud/util/text_encoding.hpp"
@@ -43,6 +47,56 @@ void logDebug(const std::string& line) {
     fprintf(file, "%s\n", line.c_str());
     fclose(file);
 }
+
+#ifdef __SWITCH__
+/// Console volume, through the same service the quick settings slider uses,
+/// so ↑/↓ behave like the system volume keys instead of only scaling mpv.
+/// Falls back to silence on failure: the caller then adjusts mpv instead.
+class SystemVolumeControl {
+public:
+    static SystemVolumeControl& instance() {
+        static SystemVolumeControl control;
+        return control;
+    }
+
+    /// Returns the new volume as a percentage, or -1 when the system refused.
+    int step(int delta) {
+        if (!this->ready) return -1;
+        AudioTarget target = AudioTarget_Invalid;
+        if (R_FAILED(audctlGetActiveOutputTarget(&target)) ||
+            target == AudioTarget_Invalid)
+            target = AudioTarget_Speaker;
+
+        s32 current = 0;
+        s32 low = 0;
+        s32 high = 100;
+        if (R_FAILED(audctlGetTargetVolume(&current, target)) ||
+            R_FAILED(audctlGetTargetVolumeMin(&low)) ||
+            R_FAILED(audctlGetTargetVolumeMax(&high)) ||
+            high <= low)
+            return -1;
+
+        // Step by whole percent of the range so the OSD number matches the
+        // slider the user sees in the system menu.
+        const int span = (int)(high - low);
+        const int stepSize = span >= 20 ? span / 20 : 1;
+        int value = (int)current + (delta > 0 ? stepSize : -stepSize);
+        if (value < (int)low) value = (int)low;
+        if (value > (int)high) value = (int)high;
+        if (R_FAILED(audctlSetTargetVolume(target, (s32)value))) return -1;
+        return (value - (int)low) * 100 / span;
+    }
+
+private:
+    SystemVolumeControl() {
+        this->ready = R_SUCCEEDED(audctlInitialize());
+        logDebug(std::string("player: audctl ") +
+                 (this->ready ? "ready" : "unavailable"));
+    }
+
+    bool ready = false;
+};
+#endif
 
 std::string speedText(double speed) {
     char buf[16];
@@ -1149,14 +1203,23 @@ void PlayerPage::adjustVolume(int delta) {
 #ifdef NXKIT_WITH_MPV
     auto& mpv = nxkit::MPVCore::instance();
     if (mpv.isStopped()) return;
-    // VIDEO_VOLUME is updated synchronously by setVolume, unlike the observed
-    // volume property, so fast repeated presses still step one notch each.
-    int value = nxkit::MPVCore::VIDEO_VOLUME + delta;
-    if (value < 0) value = 0;
-    if (value > 100) value = 100;
-    mpv.setVolume(value);
+    int shown = -1;
+#ifdef __SWITCH__
+    // Prefer the console's own volume, so the OSD number matches the system
+    // slider and the change is audible outside the player too.
+    shown = SystemVolumeControl::instance().step(delta);
+#endif
+    if (shown < 0) {
+        // Fallback: scale mpv only. VIDEO_VOLUME is updated synchronously by
+        // setVolume, unlike the observed property, so fast presses still step.
+        int value = nxkit::MPVCore::VIDEO_VOLUME + delta;
+        if (value < 0) value = 0;
+        if (value > 100) value = 100;
+        mpv.setVolume(value);
+        shown = value;
+    }
     this->showPlayerMessage("cloud/player/volume"_i18n + " " +
-                            std::to_string(value));
+                            std::to_string(shown));
 #else
     (void)delta;
 #endif
