@@ -178,6 +178,15 @@ cmake/NXKitApp.cmake 应用打包宏（Switch 下生成 NACP + NRO）
 - 修复登录成功后「我的」页面账号状态不刷新（需要切 tab 才更新）的问题
 - 修复退出登录会把 SMB 共享配置一并清空的问题；退出提示改为「重新配置连接」
 
+## 关注与反馈
+
+- 抖音：**爱柯基**，抖音号 `40054844563` —— 真机演示、版本更新与使用技巧
+- 问题与建议：[GitHub Issues](https://github.com/xbw12138/AnyCloud/issues)
+
+<img src="promo/douyin-qr.png" width="200" alt="打开抖音扫码关注 爱柯基">
+
+（宣传海报：[promo/AnyCloud-2.0.4-poster.png](promo/AnyCloud-2.0.4-poster.png)）
+
 ## 许可证
 
 [MIT](LICENSE) © 2026 xbw12138
