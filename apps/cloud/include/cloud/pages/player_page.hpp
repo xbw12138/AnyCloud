@@ -66,6 +66,10 @@ private:
     /// PLUS: opens the directory list so any entry can be started directly.
     void showPlaylistMenu();
     void startUrl(const std::string& url, const std::string& headers = "");
+    /// Some drive links only answer bounded (<= 4 MB) range requests, which
+    /// the demuxer cannot use: pull the file to a local cache in chunks and
+    /// play that copy instead.
+    void cacheAndPlay();
     void onMpvEvent(int event);
     void updateOsd();
     /// Shows a short status line ("正在加载…", an error) instead of the
@@ -173,6 +177,9 @@ private:
     /// Baidu CDN links are retried over plain http once: ffmpeg's mbedtls
     /// read fails on that host while the same url answers over http.
     bool triedHttpFallback = false;
+    /// The url failed everywhere: for audio, download it into the local cache
+    /// once and play that copy.
+    bool triedLocalCache = false;
     // Seconds to jump to once the stream is loaded (0 = play from start).
     double resumePosition = 0;
 

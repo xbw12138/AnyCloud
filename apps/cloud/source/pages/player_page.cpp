@@ -623,6 +623,7 @@ bool PlayerPage::playAt(size_t index) {
     this->fallbackHeaders.clear();
     this->triedFallbackHeaders = false;
     this->triedSoftwareDec = false;
+    this->triedLocalCache = false;
     this->statusOverride = false;
     // Subtitles belong to the video that was playing, not to the new one.
     this->subtitles.clear();
@@ -766,6 +767,115 @@ void PlayerPage::startUrl(const std::string& url, const std::string& headers) {
 #endif
 }
 
+void PlayerPage::cacheAndPlay() {
+#ifdef NXKIT_WITH_MPV
+    if (this->lastUrl.empty()) return;
+    logDebug("player: caching '" + this->file.name + "' for playback");
+    const std::string url = this->lastUrl;
+    // Bounded ranges are served to the netdisk identity only.
+    const std::string headers = this->fallbackHeaders.empty()
+                                    ? this->lastHeaders
+                                    : this->fallbackHeaders;
+    const std::string name = this->file.name;
+    const uint64_t expected = this->file.size;
+    const auto alive = this->alive;
+    this->setStatus("cloud/player/loading"_i18n);
+    nxkit::ensureDirectory(nxkit::dataPath("cache/"));
+    cpr::async([this, alive, url, headers, name, expected] {
+        std::string stem = name;
+        for (char& c : stem) {
+            bool keep = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '.' || c == '-' ||
+                        c == '_';
+            if (!keep) c = '_';
+        }
+        if (stem.size() > 64) stem = stem.substr(stem.size() - 64);
+        const std::string path = nxkit::dataPath("cache/" + stem);
+        FILE* out = fopen(path.c_str(), "wb");
+        if (!out) {
+            brls::sync([this, alive] {
+                if (*alive) this->setStatus("cloud/player/error"_i18n);
+            });
+            return;
+        }
+        constexpr size_t kChunk = 4 * 1024 * 1024;
+        uint64_t written = 0;
+        uint64_t total = 0;
+        bool failed = false;
+        int reported = 0;
+        while (true) {
+            nxkit::HttpClient client;
+            client.setHeaderBlock(headers);
+            client.setTimeout(60000);
+            client.setHeader("Range",
+                             "bytes=" + std::to_string(written) + "-" +
+                                 std::to_string(written + kChunk - 1));
+            nxkit::HttpResult result;
+            try {
+                result = client.get(url);
+            } catch (const std::exception&) {
+                failed = true;
+                break;
+            }
+            if (!result.ok || result.body.empty()) {
+                failed = true;
+                break;
+            }
+            if (total == 0) {
+                auto it = result.headers.find("content-range");
+                if (it != result.headers.end()) {
+                    size_t slash = it->second.find('/');
+                    if (slash != std::string::npos) {
+                        try {
+                            total = std::stoull(it->second.substr(slash + 1));
+                        } catch (...) {
+                        }
+                    }
+                }
+            }
+            if (fwrite(result.body.data(), 1, result.body.size(), out) !=
+                result.body.size()) {
+                failed = true;
+                break;
+            }
+            written += result.body.size();
+            const uint64_t goal = total > 0 ? total : expected;
+            if (goal > 0) {
+                int pct = (int)(written * 100 / goal);
+                if (pct / 10 != reported / 10) {
+                    reported = pct;
+                    brls::sync([this, alive, pct] {
+                        if (!*alive) return;
+                        this->setStatus(brls::getStr("cloud/player/loading") +
+                                        " " + std::to_string(pct) + "%");
+                    });
+                }
+            }
+            // 200 means the server ignored the range and sent the rest.
+            if (result.status != 206) break;
+            if (total > 0 && written >= total) break;
+            if (result.body.size() < kChunk) break;
+        }
+        fclose(out);
+        if (failed || written == 0) {
+            remove(path.c_str());
+            brls::sync([this, alive] {
+                if (!*alive) return;
+                this->setStatus("cloud/player/error"_i18n);
+            });
+            return;
+        }
+        logDebug("player: cached " + std::to_string(written) + " bytes");
+        brls::sync([this, alive, path] {
+            if (!*alive) return;
+            this->startUrl(path, "");
+            // Keep the flag set: a broken cache must not restart the download.
+            this->triedLocalCache = true;
+        });
+    });
+#endif
+}
+
 /// Some Quark files use codecs the console's hwdec path rejects; retrying the
 /// same url with software decoding usually still plays them.
 void PlayerPage::retryWithSoftwareDec() {
@@ -849,6 +959,16 @@ void PlayerPage::onMpvEvent(int event) {
                 logDebug("player: retrying baidu link over http");
                 this->setStatus("cloud/player/loading"_i18n);
                 this->startUrl(httpUrl, httpHeaders);
+                break;
+            }
+            // Some Baidu files only answer bounded (<= 4 MB) range requests,
+            // which the demuxer cannot use; audio is small enough to pull into
+            // the local cache once and play from there.
+            if (this->isAudio && !this->triedLocalCache && this->provider &&
+                this->provider->id() == "baidu" && !this->lastUrl.empty() &&
+                this->lastUrl.find("://") != std::string::npos) {
+                this->triedLocalCache = true;
+                this->cacheAndPlay();
                 break;
             }
             this->setStatus("cloud/player/error"_i18n);
@@ -1512,7 +1632,18 @@ void PlayerPage::selectSubtitle(int index) {
                     if (!body.empty()) {
                         body = subtitleToUtf8(body);
                         nxkit::ensureDirectory(nxkit::dataPath("subtitles/"));
-                        path = nxkit::dataPath("subtitles/" + sub.id + "." +
+                        // Baidu uses the full path as the file id, so the id
+                        // cannot be dropped into a flat directory verbatim.
+                        std::string stem = sub.id;
+                        for (char& c : stem) {
+                            bool keep = (c >= 'a' && c <= 'z') ||
+                                        (c >= 'A' && c <= 'Z') ||
+                                        (c >= '0' && c <= '9') || c == '.' ||
+                                        c == '-' || c == '_';
+                            if (!keep) c = '_';
+                        }
+                        if (stem.size() > 96) stem = stem.substr(stem.size() - 96);
+                        path = nxkit::dataPath("subtitles/" + stem + "." +
                                                (ext.empty() ? "srt" : ext));
                         std::ofstream out(path, std::ios::binary |
                                                     std::ios::trunc);

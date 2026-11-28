@@ -13,6 +13,60 @@ using namespace brls::literals;
 
 namespace cloud {
 
+namespace {
+
+/// Baidu refuses plain GETs on some PCS links with 403 "user is not
+/// authorized" and only answers bounded range requests for files it has not
+/// fully cached on the node, so the image is pulled in 4 MB chunks and
+/// stitched together. Returns the bytes and reports failure through `error`.
+std::string fetchBaiduImage(const std::string& url, const std::string& headers,
+                            std::string& error) {
+    constexpr size_t kChunk = 4 * 1024 * 1024;
+    constexpr size_t kLimit = 256 * 1024 * 1024;
+    std::string body;
+    uint64_t total = 0;
+    while (true) {
+        nxkit::HttpClient client;
+        client.setHeaderBlock(headers);
+        client.setTimeout(30000);
+        const size_t offset = body.size();
+        client.setHeader("Range", "bytes=" + std::to_string(offset) + "-" +
+                                      std::to_string(offset + kChunk - 1));
+        nxkit::HttpResult result = client.get(url);
+        if (!result.ok) {
+            error = result.error.empty()
+                        ? "HTTP " + std::to_string(result.status)
+                        : result.error;
+            return std::string();
+        }
+        if (total == 0) {
+            auto it = result.headers.find("content-range");
+            if (it != result.headers.end()) {
+                size_t slash = it->second.find('/');
+                if (slash != std::string::npos) {
+                    try {
+                        total = std::stoull(it->second.substr(slash + 1));
+                    } catch (...) {
+                    }
+                }
+            }
+        }
+        body += result.body;
+        // 200 means the server ignored the range and sent everything.
+        if (result.status != 206) break;
+        if (total > 0 && body.size() >= total) break;
+        if (result.body.size() < kChunk) break;
+        if (body.size() > kLimit) {
+            error = "image too large";
+            return std::string();
+        }
+    }
+    if (body.empty()) error = "empty body";
+    return body;
+}
+
+}  // namespace
+
 ImageViewer::ImageViewer(std::shared_ptr<DriveProvider> provider,
                          std::vector<DriveFile> images, size_t index)
     : provider(std::move(provider)),
@@ -92,10 +146,16 @@ void ImageViewer::showCurrent() {
             cpr::async([this, alive, generation, url, headers] {
                 nxkit::HttpResult result;
                 try {
-                    nxkit::HttpClient client;
-                    client.setHeaderBlock(headers);
-                    client.setTimeout(30000);
-                    result = client.get(url);
+                    if (this->provider->id() == "baidu") {
+                        result.body = fetchBaiduImage(url, headers,
+                                                      result.error);
+                        result.ok = result.error.empty();
+                    } else {
+                        nxkit::HttpClient client;
+                        client.setHeaderBlock(headers);
+                        client.setTimeout(30000);
+                        result = client.get(url);
+                    }
                 } catch (const std::exception& e) {
                     result.ok = false;
                     result.error = e.what();
