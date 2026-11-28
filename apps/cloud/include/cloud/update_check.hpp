@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace cloud {
 
@@ -16,6 +17,14 @@ struct UpdateInfo {
     std::string version;
     std::string changelog;
     uint64_t size = 0;
+};
+
+/// One published build, as listed by the store.
+struct ReleaseNote {
+    std::string version;
+    std::string changelog;
+    /// Release date, "YYYY-MM-DD" (empty when the store did not report one).
+    std::string date;
 };
 
 /// Compares dotted versions such as "1.6.9"; returns true when `latest` is
@@ -31,5 +40,11 @@ void checkForUpdate(
 /// stay silent unless there is something newer to install.
 void presentUpdateResult(const UpdateInfo& info, bool ok,
                          const std::string& error, bool manual);
+
+/// Reads the store's published version list (newest first). The callback runs
+/// on a worker thread.
+void fetchReleaseHistory(
+    std::function<void(bool ok, const std::vector<ReleaseNote>& notes,
+                       const std::string& error)> callback);
 
 }  // namespace cloud

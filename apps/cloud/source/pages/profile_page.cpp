@@ -282,6 +282,153 @@ private:
     std::function<void()> callback;
 };
 
+/// Lists every published build with its changelog, newest first, straight from
+/// the store backend.
+class ReleaseHistoryView : public brls::Box {
+public:
+    ReleaseHistoryView() {
+        brls::Theme theme = brls::Application::getTheme();
+        this->setAxis(brls::Axis::COLUMN);
+        this->setGrow(1);
+        this->setPadding(26, 40, 20, 40);
+        this->setBackgroundColor(theme["cloud/bg"]);
+
+        brls::Box* header = new brls::Box(brls::Axis::ROW);
+        header->setAlignItems(brls::AlignItems::CENTER);
+
+        brls::Label* title = new brls::Label();
+        title->setText("cloud/profile/changelog"_i18n);
+        title->setFontSize(28);
+        title->setTextColor(theme["cloud/text"]);
+        title->setHeight(36);
+        header->addView(title);
+
+        brls::Label* hint = new brls::Label();
+        hint->setText("cloud/profile/changelog_hint"_i18n);
+        hint->setFontSize(14);
+        hint->setTextColor(theme["cloud/text_secondary"]);
+        hint->setHeight(20);
+        hint->setGrow(1);
+        hint->setHorizontalAlign(brls::HorizontalAlign::RIGHT);
+        header->addView(hint);
+
+        this->addView(header);
+
+        this->list = new brls::Box(brls::Axis::COLUMN);
+        this->list->setWidthPercentage(100);
+        this->list->setPaddingTop(10);
+        this->list->setPaddingBottom(20);
+        this->list->addView(this->makeNotice("cloud/profile/changelog_loading"_i18n));
+
+        brls::ScrollingFrame* scroller = new brls::ScrollingFrame();
+        scroller->setGrow(1);
+        scroller->setMarginTop(8);
+        scroller->setContentView(this->list);
+        this->addView(scroller);
+
+        // Borealis does not pop activities on B by itself.
+        this->registerAction("hints/back"_i18n, brls::BUTTON_B,
+                             [](brls::View*) {
+                                 brls::Application::popActivity();
+                                 return true;
+                             });
+
+        // pushActivity only focuses the content view, so the scroller has to
+        // take the focus explicitly or the stick never scrolls the page.
+        brls::sync([scroller] { brls::Application::giveFocus(scroller); });
+
+        fetchReleaseHistory([this, alive = this->alive](
+                                bool ok, const std::vector<ReleaseNote>& notes,
+                                const std::string& error) {
+            brls::sync([this, alive, ok, notes, error] {
+                if (!*alive) return;
+                this->fill(ok, notes, error);
+            });
+        });
+    }
+
+    ~ReleaseHistoryView() override { *this->alive = false; }
+
+private:
+    brls::Label* makeNotice(const std::string& text) {
+        brls::Theme theme = brls::Application::getTheme();
+        brls::Label* label = new brls::Label();
+        label->setText(text);
+        label->setFontSize(16);
+        label->setWidthPercentage(100);
+        label->setSingleLine(false);
+        label->setTextColor(theme["cloud/text_secondary"]);
+        return label;
+    }
+
+    brls::Box* makeBlock(const ReleaseNote& note) {
+        brls::Theme theme = brls::Application::getTheme();
+        brls::Box* block = new brls::Box(brls::Axis::COLUMN);
+        block->setWidthPercentage(100);
+        block->setPadding(16, 20, 16, 20);
+        block->setMarginBottom(10);
+        block->setCornerRadius(16);
+        block->setBackgroundColor(theme["cloud/surface"]);
+
+        brls::Box* row = new brls::Box(brls::Axis::ROW);
+        row->setAlignItems(brls::AlignItems::CENTER);
+
+        brls::Label* version = new brls::Label();
+        version->setText(note.version);
+        version->setFontSize(20);
+        version->setTextColor(theme["cloud/text"]);
+        version->setHeight(26);
+        row->addView(version);
+
+        if (!note.date.empty()) {
+            brls::Label* date = new brls::Label();
+            date->setText(note.date);
+            date->setFontSize(14);
+            date->setMarginLeft(12);
+            date->setGrow(1);
+            date->setHeight(20);
+            date->setHorizontalAlign(brls::HorizontalAlign::RIGHT);
+            date->setTextColor(theme["cloud/text_secondary"]);
+            row->addView(date);
+        }
+        block->addView(row);
+
+        if (!note.changelog.empty()) {
+            brls::Label* body = new brls::Label();
+            body->setText(note.changelog);
+            body->setFontSize(15);
+            body->setLineHeight(1.5f);
+            body->setMarginTop(8);
+            body->setWidthPercentage(100);
+            body->setSingleLine(false);
+            body->setTextColor(theme["cloud/text"]);
+            block->addView(body);
+        }
+        return block;
+    }
+
+    void fill(bool ok, const std::vector<ReleaseNote>& notes,
+              const std::string& error) {
+        if (!this->list) return;
+        this->list->clearViews();
+        if (!ok) {
+            this->list->addView(this->makeNotice(
+                error.empty() ? "cloud/profile/changelog_failed"_i18n : error));
+            return;
+        }
+        if (notes.empty()) {
+            this->list->addView(
+                this->makeNotice("cloud/profile/changelog_empty"_i18n));
+            return;
+        }
+        for (const ReleaseNote& note : notes)
+            this->list->addView(this->makeBlock(note));
+    }
+
+    std::shared_ptr<bool> alive = std::make_shared<bool>(true);
+    brls::Box* list = nullptr;
+};
+
 ProfilePage::ProfilePage() {
     brls::Theme theme = brls::Application::getTheme();
     this->setAxis(brls::Axis::COLUMN);
@@ -475,6 +622,20 @@ void ProfilePage::build() {
     this->updateTile->setWidth(0);
     this->updateTile->setGrow(1);
     tools->addView(this->updateTile);
+
+    brls::Box* historyGap = new brls::Box();
+    historyGap->setWidth(16);
+    historyGap->setHeight(1);
+    tools->addView(historyGap);
+
+    ActionTile* historyTile =
+        new ActionTile("cloud/profile/changelog"_i18n, [] {
+            brls::Application::pushActivity(
+                new brls::Activity(new ReleaseHistoryView()));
+        });
+    historyTile->setWidth(0);
+    historyTile->setGrow(1);
+    tools->addView(historyTile);
 
 #ifdef BUILTIN_NSP
     brls::Box* toolsGap = new brls::Box();

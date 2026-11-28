@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <ctime>
 #include <vector>
 
 #include <borealis.hpp>
@@ -41,6 +42,17 @@ std::vector<int> parseVersion(const std::string& text) {
     }
     if (!digits.empty()) parts.push_back(std::atoi(digits.c_str()));
     return parts;
+}
+
+/// Store timestamps are milliseconds since the epoch.
+std::string dateOf(int64_t milliseconds) {
+    if (milliseconds <= 0) return std::string();
+    time_t seconds = (time_t)(milliseconds / 1000);
+    struct tm tmv {};
+    localtime_r(&seconds, &tmv);
+    char buf[16];
+    strftime(buf, sizeof(buf), "%Y-%m-%d", &tmv);
+    return buf;
 }
 
 }  // namespace
@@ -85,6 +97,43 @@ void checkForUpdate(
         info.available =
             !info.version.empty() && isNewerVersion(info.version, NXKIT_APP_VERSION);
         callback(true, info, std::string());
+    });
+}
+
+void fetchReleaseHistory(
+    std::function<void(bool, const std::vector<ReleaseNote>&,
+                       const std::string&)> callback) {
+    cpr::async([callback = std::move(callback)] {
+        nxkit::HttpClient client;
+        client.setBaseUrl(kStoreBaseUrl);
+        client.setTimeout(8000);
+
+        nxkit::HttpResult result = client.get(kStoreAppPath);
+        if (!result.ok) {
+            callback(false, {},
+                     result.error.empty() ? "network error" : result.error);
+            return;
+        }
+
+        nlohmann::json body = result.json();
+        if (!body.is_object() || !body.contains("versions") ||
+            !body["versions"].is_array()) {
+            callback(false, {}, "invalid response");
+            return;
+        }
+
+        std::vector<ReleaseNote> notes;
+        notes.reserve(body["versions"].size());
+        for (const auto& item : body["versions"]) {
+            if (!item.is_object()) continue;
+            ReleaseNote note;
+            note.version = item.value("version", std::string());
+            if (note.version.empty()) continue;
+            note.changelog = item.value("changelog", std::string());
+            note.date = dateOf(item.value("created_at", static_cast<int64_t>(0)));
+            notes.push_back(std::move(note));
+        }
+        callback(true, notes, std::string());
     });
 }
 
