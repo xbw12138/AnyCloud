@@ -175,8 +175,9 @@
     "track_audio": "音轨",
     "track_none": "当前视频没有可切换的字幕或音轨",
     "audio_switched": "已切换音轨",
-    "hint_video": "A 播放/暂停  ←/→ 快退/快进  L/R 上一集/下一集  X 循环  - 字幕/音轨  + 播放目录  Y 清晰度  R3 画面比例  L3 倍速  B 退出",
-    "hint_audio": "A 播放/暂停  ←/→ 快退/快进  L/R 上一集/下一集  X 循环  + 播放目录  L3 倍速  B 退出"
+    "volume": "音量",
+    "hint_video": "A 播放/暂停  ←/→ 快退/快进  ↑/↓ 音量  L/R 上一集/下一集  X 循环  - 字幕/音轨  + 播放目录  Y 清晰度  R3 画面比例  L3 倍速  B 退出",
+    "hint_audio": "A 播放/暂停  ←/→ 快退/快进  ↑/↓ 音量  L/R 上一集/下一集  X 循环  + 播放目录  L3 倍速  B 退出"
   },
   "image": {
     "loading": "加载中…",
@@ -243,6 +244,11 @@
     "desktop_warn": "安装桌面图标可能导致ban机，请再次确认",
     "ok": "确定",
     "check_update": "检查更新",
+    "changelog": "更新历史",
+    "changelog_hint": "↑/↓ 浏览  B 返回",
+    "changelog_loading": "正在获取更新历史…",
+    "changelog_empty": "还没有发布记录",
+    "changelog_failed": "获取更新历史失败",
     "checking": "正在检查…",
     "refreshing": "正在刷新…",
     "features": "功能介绍",
@@ -289,7 +295,7 @@
       "player_title": "视频播放",
       "player_toggle": "播放 / 暂停",
       "player_seek10": "快退 / 快进 10 秒",
-      "player_seek60": "快进 / 快退 60 秒",
+      "player_volume": "音量 + / −",
       "player_seek30": "快退 / 快进 30 秒",
       "player_episode": "上一集 / 下一集",
       "player_loop": "循环模式：关闭 / 单集 / 列表",

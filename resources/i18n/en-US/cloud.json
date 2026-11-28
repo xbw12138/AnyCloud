@@ -175,8 +175,9 @@
     "track_audio": "Audio tracks",
     "track_none": "No switchable subtitles or audio tracks",
     "audio_switched": "Audio track switched",
-    "hint_video": "A Play/Pause  ←/→ Seek  L/R Prev/Next  X Loop  - Subtitles/Audio  + Playlist  Y Quality  R3 Aspect  L3 Speed  B Exit",
-    "hint_audio": "A Play/Pause  ←/→ Seek  L/R Prev/Next  X Loop  + Playlist  L3 Speed  B Exit"
+    "volume": "Volume",
+    "hint_video": "A Play/Pause  ←/→ Seek  ↑/↓ Volume  L/R Prev/Next  X Loop  - Subtitles/Audio  + Playlist  Y Quality  R3 Aspect  L3 Speed  B Exit",
+    "hint_audio": "A Play/Pause  ←/→ Seek  ↑/↓ Volume  L/R Prev/Next  X Loop  + Playlist  L3 Speed  B Exit"
   },
   "image": {
     "loading": "Loading…",
@@ -243,6 +244,11 @@
     "desktop_warn": "Installing a home-menu icon may risk a ban. Please confirm again.",
     "ok": "OK",
     "check_update": "Check for updates",
+    "changelog": "Release notes",
+    "changelog_hint": "↑/↓ Scroll  B Back",
+    "changelog_loading": "Loading release notes…",
+    "changelog_empty": "No releases yet",
+    "changelog_failed": "Failed to load release notes",
     "checking": "Checking…",
     "refreshing": "Refreshing…",
     "features": "Features",
@@ -289,7 +295,7 @@
       "player_title": "Video player",
       "player_toggle": "Play / pause",
       "player_seek10": "Seek back / forward 10 seconds",
-      "player_seek60": "Seek forward / back 60 seconds",
+      "player_volume": "Volume up / down",
       "player_seek30": "Seek back / forward 30 seconds",
       "player_episode": "Previous / next episode",
       "player_loop": "Loop mode: off / one / all",
