@@ -26,22 +26,32 @@ public:
         this->invalidate();
     }
 
+    /// Track / knob colours, so the bar also reads on a light background.
+    void setTrackColor(NVGcolor value) { this->trackColor = value; }
+    void setThumbColor(NVGcolor value) { this->thumbColor = value; }
+
     void draw(NVGcontext* vg, float x, float y, float width, float height,
               brls::Style style, brls::FrameContext* ctx) override;
 
 private:
     float progress = 0;
+    NVGcolor trackColor = nvgRGBA(255, 255, 255, 70);
+    NVGcolor thumbColor = nvgRGBA(255, 255, 255, 255);
 };
+
+class AudioStageView;
 
 /// Plays a video or audio file through the provider's streams.
 /// Video mode renders fullscreen with a bottom OSD (title, seek bar, hints)
-/// that fades out while playing; audio mode shows a centered title with
-/// progress. When the playlist holds more than one file, finishing one starts
-/// the next (same directory playback).
+/// that fades out while playing; audio mode shows a widescreen dashboard with
+/// a spinning record on the left and the queue on the right. When the playlist
+/// holds more than one file, finishing one starts the next (same directory
+/// playback).
 class PlayerPage : public brls::Box {
 public:
     PlayerPage(std::shared_ptr<DriveProvider> provider,
-               std::vector<DriveFile> playlist, size_t index, bool isAudio);
+               std::vector<DriveFile> playlist, size_t index, bool isAudio,
+               bool resumeInPlace = false);
     ~PlayerPage() override;
 
     void draw(NVGcontext* vg, float x, float y, float width, float height,
@@ -63,6 +73,14 @@ private:
     /// Cycles off -> one -> all and reports the new mode on screen.
     void toggleLoopMode();
     std::string loopLabel() const;
+    /// Audio: ↑ / ↓ move the D-pad cursor through the queue, A starts it.
+    void moveSelection(int delta);
+    /// Y on the audio page: shuffle the queue.
+    void toggleShuffle();
+    /// Next shuffled entry: each track is played once per round, and a new
+    /// round starts only when `wrap` is set (loop all / manual skip). Returns
+    /// playlist.size() when the round is over.
+    size_t nextShuffled(bool wrap);
     /// PLUS: opens the directory list so any entry can be started directly.
     void showPlaylistMenu();
     void startUrl(const std::string& url, const std::string& headers = "");
@@ -87,6 +105,10 @@ private:
     void seekBy(int64_t seconds);
     /// ↑ / ↓: volume, in 5% steps.
     void adjustVolume(int delta);
+    /// Video: left-center volume meter, shown for a moment after ↑ / ↓.
+    void showVolume(int percent);
+    void drawVolume(NVGcontext* vg, float x, float y, float width,
+                    float height);
     void showQualityMenu();
     void presentQualityMenu();
     /// L3: playback speed menu (0.5x - 2.0x).
@@ -135,6 +157,14 @@ private:
     /// Files of the directory the current file was opened from, in list order.
     std::vector<DriveFile> playlist;
     size_t playlistIndex = 0;
+    /// Audio page: row the D-pad points at, and whether shuffle is on.
+    size_t selectedIndex = 0;
+    bool shuffle = false;
+    /// Entries of the current shuffle round that have not played yet.
+    std::vector<size_t> shuffleBag;
+    /// True once a shuffle round has started, so an empty bag can mean
+    /// "round finished" instead of "round not started".
+    bool shuffleRoundUsed = false;
     /// What happens when the last file ends (X cycles it).
     LoopMode loopMode = LoopMode::Off;
     /// Playback speed picked with the L3 menu; reapplied on every load.
@@ -184,9 +214,13 @@ private:
     bool triedLocalCache = false;
     // Seconds to jump to once the stream is loaded (0 = play from start).
     double resumePosition = 0;
+    /// Audio reopened from the background: the stream is still running and
+    /// must be taken over instead of reloaded.
+    bool resumeInPlace = false;
 
-    brls::Label* loadingLabel = nullptr;
     brls::Label* titleLabel = nullptr;
+    /// Audio page: the whole-screen stage that draws the record and the queue.
+    AudioStageView* stage = nullptr;
     /// Video OSD: bottom gradient panel.
     brls::Box* osdPanel = nullptr;
     brls::Label* osdName = nullptr;
@@ -194,11 +228,13 @@ private:
     brls::Label* elapsedLabel = nullptr;
     brls::Label* durationLabel = nullptr;
     SeekBarView* seekBar = nullptr;
-    /// Audio progress line.
-    brls::Label* osdProgress = nullptr;
     brls::Label* hintLabel = nullptr;
     /// Pending `brls::delay` id used to hide the OSD.
     size_t osdTimer = 0;
+    /// Video volume meter: percentage to draw and how long it stays visible.
+    int volumePercent = -1;
+    bool volumeVisible = false;
+    size_t volumeTimer = 0;
 
     bool mpvAvailable = false;
 

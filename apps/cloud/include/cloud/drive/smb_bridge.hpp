@@ -52,6 +52,8 @@ private:
     std::string base;
     bool starting = false;
     bool finished = false;
+    /// Port the listener bound last, used to check it is still alive.
+    int listenPort = 0;
 
     std::mutex queueMutex;
     std::condition_variable queueReady;

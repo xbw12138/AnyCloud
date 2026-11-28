@@ -66,6 +66,28 @@ void RecentStore::add(const DriveFile& input) {
     this->save();
 }
 
+void RecentStore::remove(const DriveFile& file) {
+    std::lock_guard<std::mutex> lock(this->mutex);
+    for (auto it = this->entries.begin(); it != this->entries.end(); ++it) {
+        const bool sameDrive =
+            it->providerId.empty() || file.providerId.empty()
+                ? it->provider == file.provider
+                : it->providerId == file.providerId;
+        if (it->id == file.id && sameDrive) {
+            this->entries.erase(it);
+            this->save();
+            return;
+        }
+    }
+}
+
+void RecentStore::clear() {
+    std::lock_guard<std::mutex> lock(this->mutex);
+    if (this->entries.empty()) return;
+    this->entries.clear();
+    this->save();
+}
+
 void RecentStore::load() {
     std::ifstream input(nxkit::dataPath(kFileName));
     if (!input.is_open()) return;

@@ -5,6 +5,8 @@
 #include "cloud/pages/text_reader.hpp"
 
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <unordered_map>
 
 #include <borealis/core/thread.hpp>
@@ -17,8 +19,29 @@ namespace cloud {
 
 namespace {
 
+/// On-device diagnostics, same file the player and the SMB layer log to.
+void readerLog(const std::string& line) {
+#ifdef __SWITCH__
+    FILE* file = fopen("sdmc:/switch/nxkit/qr_debug.log", "a");
+#else
+    FILE* file = fopen("/tmp/qr_debug.log", "a");
+#endif
+    if (!file) return;
+    fprintf(file, "%s\n", line.c_str());
+    fclose(file);
+}
+
 constexpr float kFontSize = 20.0f;
-constexpr float kLineHeight = 1.65f;
+/// Baseline distance of the page body. NanoVG's own line height (font metrics
+/// times lineHeight) came out far larger, so the reader positions lines itself.
+constexpr float kLinePixels = 30.0f;
+/// Extra space for a paragraph break: much smaller than a full blank line, a
+/// whole empty line between paragraphs looked loose and uneven.
+constexpr float kParagraphGap = 12.0f;
+
+/// Headings are drawn larger than the body and get their own line advance.
+float headingSize(int level) { return level <= 2 ? 28.0f : 24.0f; }
+float headingAdvance(int level) { return level <= 2 ? 44.0f : 38.0f; }
 
 size_t nextCodepoint(const std::string& text, size_t index, uint32_t* cp) {
     unsigned char c = (unsigned char)text[index];
@@ -117,7 +140,10 @@ std::vector<std::string> wrapText(const std::string& text, float maxWidth,
     auto flush = [&] {
         // Trim trailing spaces, keep intentional indentation out of the way.
         while (!line.empty() && line.back() == ' ') line.pop_back();
-        lines.push_back(line);
+        // The extracted text already marks paragraph breaks with an empty
+        // line; collapse runs so a paragraph never opens a double gap.
+        if (!(line.empty() && !lines.empty() && lines.back().empty()))
+            lines.push_back(line);
         line.clear();
         lineWidth = 0;
     };
@@ -131,9 +157,6 @@ std::vector<std::string> wrapText(const std::string& text, float maxWidth,
         if (cp == '\r') continue;
         if (cp == '\n') {
             flush();
-            // A blank line separates paragraphs and makes long books easier
-            // to scan.
-            if (!lines.empty() && !lines.back().empty()) lines.push_back("");
             continue;
         }
 
@@ -163,6 +186,73 @@ std::vector<std::string> wrapText(const std::string& text, float maxWidth,
 }
 
 }  // namespace
+
+/// Page body painted directly with NanoVG. A box label measures its line
+/// height from the font metrics (about 44 px here instead of the 30 px the
+/// pagination expects) and silently falls back to one horizontally scrolling
+/// line when the text does not fit, so the reader draws the lines it already
+/// wrapped itself.
+class ReaderTextView : public brls::View {
+public:
+    ReaderTextView() { this->setFocusable(false); }
+
+    void setPage(std::string text) {
+        this->text = std::move(text);
+        this->invalidate();
+    }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        if (width <= 0 || height <= 0 || this->text.empty()) return;
+
+        nvgSave(vg);
+        nvgScissor(vg, x, y, width, height);
+        nvgFontFaceId(vg, brls::Application::getDefaultFont());
+        nvgFontSize(vg, kFontSize);
+        nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
+        nvgFillColor(vg, brls::Application::getTheme()["cloud/text"]);
+
+        float ty = y;
+        size_t pos = 0;
+        while (pos < this->text.size()) {
+            size_t newline = this->text.find('\n', pos);
+            std::string line = this->text.substr(
+                pos, newline == std::string::npos ? std::string::npos
+                                                  : newline - pos);
+
+            int level = 0;
+            std::string heading;
+            const bool isHeading = parseBookHeading(line, &level, &heading);
+            float advance = kLinePixels;
+            if (isHeading) {
+                advance = headingAdvance(level);
+            } else if (line.empty()) {
+                // Paragraph breaks cost less than a full line.
+                advance = kParagraphGap;
+            }
+            if (ty + advance > y + height + 0.5f) break;
+
+            if (isHeading && !heading.empty()) {
+                const float size = headingSize(level);
+                nvgFontSize(vg, size);
+                // The bundled fonts have no bold face: a hair of offset fakes
+                // the heavier weight headings need.
+                nvgText(vg, x, ty, heading.c_str(), nullptr);
+                nvgText(vg, x + 0.7f, ty, heading.c_str(), nullptr);
+                nvgFontSize(vg, kFontSize);
+            } else if (!line.empty()) {
+                nvgText(vg, x, ty, line.c_str(), nullptr);
+            }
+            ty += advance;
+            if (newline == std::string::npos) break;
+            pos = newline + 1;
+        }
+        nvgRestore(vg);
+    }
+
+private:
+    std::string text;
+};
 
 TextReaderPage::TextReaderPage(std::string path) : path(std::move(path)) {
     this->setAxis(brls::Axis::COLUMN);
@@ -194,15 +284,17 @@ TextReaderPage::TextReaderPage(std::string path) : path(std::move(path)) {
     this->contentBox->setClipsToBounds(true);
     this->addView(this->contentBox);
 
-    this->pageLabel = new brls::Label();
-    this->pageLabel->setFontSize(kFontSize);
-    this->pageLabel->setLineHeight(kLineHeight);
-    // Without this the label draws a single truncated line, so every "page"
-    // looked like one row even though the pagination was correct.
-    this->pageLabel->setIsWrapping(true);
-    this->pageLabel->setWidthPercentage(100);
-    this->pageLabel->setTextColor(theme["cloud/text"]);
-    this->contentBox->addView(this->pageLabel);
+    this->pageView = new ReaderTextView();
+    this->pageView->setWidthPercentage(100);
+    this->contentBox->addView(this->pageView);
+
+    // Illustration pages reuse the same area: one picture is decoded at a
+    // time and its texture is released when the next page is shown.
+    this->imageView = new brls::Image();
+    this->imageView->setScalingType(brls::ImageScalingType::FIT);
+    this->imageView->setImageAlign(brls::ImageAlignment::CENTER);
+    this->imageView->setVisibility(brls::Visibility::GONE);
+    this->contentBox->addView(this->imageView);
 
     this->hintLabel = new brls::Label();
     this->hintLabel->setFontSize(12);
@@ -268,6 +360,12 @@ TextReaderPage::TextReaderPage(std::string path) : path(std::move(path)) {
             return true;
         });
     this->registerAction(
+        "cloud/reader/toc"_i18n, brls::BUTTON_Y,
+        [this](brls::View*) -> bool {
+            this->showToc();
+            return true;
+        });
+    this->registerAction(
         "", brls::BUTTON_B,
         [](brls::View*) -> bool {
             brls::Application::popActivity();
@@ -290,10 +388,16 @@ TextReaderPage::~TextReaderPage() { *this->alive = false; }
 
 void TextReaderPage::applyBook(BookContent content) {
     this->book = std::move(content);
+    readerLog("reader: open '" + this->path + "' ok=" +
+              (this->book.ok ? "1" : "0") + " err=" + this->book.error +
+              " chapters=" + std::to_string(this->book.chapters.size()));
     if (!this->book.ok) {
         this->titleLabel->setText("cloud/reader/error"_i18n);
         this->statusLabel->setText(this->book.error);
-        this->pageLabel->setText("");
+        this->pageView->setVisibility(brls::Visibility::VISIBLE);
+        this->pageView->setPage("");
+        if (this->imageView)
+            this->imageView->setVisibility(brls::Visibility::GONE);
         return;
     }
     this->titleLabel->setText(this->book.title);
@@ -309,19 +413,43 @@ void TextReaderPage::applyBook(BookContent content) {
 void TextReaderPage::onLayout() {
     brls::Box::onLayout();
 
+    if (this->building) return;
     if (!this->book.ok || !this->contentBox) return;
-    float width = this->contentBox->getWidth();
+
+    // Percentage widths are resolved unreliably inside a flex grown box: the
+    // page label measured the whole text as one endless line, so every page
+    // showed a single row. Give the content column and the label the exact
+    // pixel width instead (screen width minus the page padding).
+    const float inset = this->contentBox->getX() - this->getX();
+    float width = this->getWidth() - inset * 2.0f;
+    if (width <= 0) width = this->contentBox->getWidth();
+    if (width <= 0) return;
+
+    this->building = true;
+    if (std::fabs(this->contentBox->getWidth() - width) > 0.5f)
+        this->contentBox->setWidth(width);
+    if (std::fabs(this->pageView->getWidth() - width) > 0.5f)
+        this->pageView->setWidth(width);
+
     float height = this->contentBox->getHeight();
-    if (width <= 0 || height <= 0) return;
+    if (height <= 0) {
+        this->building = false;
+        return;
+    }
+    if (std::fabs(this->pageView->getHeight() - height) > 0.5f)
+        this->pageView->setHeight(height);
 
     this->layoutReady = true;
     if (std::fabs(width - this->lastWidth) < 0.5f &&
-        std::fabs(height - this->lastHeight) < 0.5f && !this->pages.empty())
+        std::fabs(height - this->lastHeight) < 0.5f && !this->pages.empty()) {
+        this->building = false;
         return;
+    }
 
     this->lastWidth = width;
     this->lastHeight = height;
     this->rebuildPages();
+    this->building = false;
 }
 
 void TextReaderPage::rebuildPages() {
@@ -333,58 +461,186 @@ void TextReaderPage::rebuildPages() {
     if (this->chapterIndex >= this->book.chapters.size())
         this->chapterIndex = this->book.chapters.size() - 1;
 
+    // Sizing the picture view runs the root layout synchronously; block the
+    // resulting onLayout() until pagination is complete.
+    this->building = true;
+
     const BookChapter& chapter = this->book.chapters[this->chapterIndex];
-    int font = this->pageLabel->getFont();
     float width = this->contentBox->getWidth();
     float height = this->contentBox->getHeight();
     if (width <= 0) width = this->getWidth();
     if (height <= 0) height = 400;
 
-    // A small safety margin absorbs per-glyph width rounding so nanovg never
-    // re-wraps a line we already broke.
-    std::vector<std::string> lines =
-        wrapText(chapter.text, width * 0.99f, font, kFontSize);
-    int linesPerPage = (int)(height / (kFontSize * kLineHeight));
-    if (linesPerPage < 3) linesPerPage = 3;
-
-    for (size_t start = 0; start < lines.size();
-         start += (size_t)linesPerPage) {
-        std::string page;
-        size_t end = std::min(lines.size(), start + (size_t)linesPerPage);
-        for (size_t i = start; i < end; i++) {
-            if (i > start) page.push_back('\n');
-            page += lines[i];
-        }
-        // Drop trailing blank lines so pages do not look half empty.
-        while (!page.empty() && page.back() == '\n') page.pop_back();
-        if (page.empty() && !this->pages.empty()) continue;
-        this->pages.push_back(std::move(page));
+    if (this->pageView) {
+        this->pageView->setWidth(width);
+        this->pageView->setHeight(height);
     }
-    if (this->pages.empty()) this->pages.push_back(std::string());
+    if (this->imageView) {
+        this->imageView->setWidth(width);
+        this->imageView->setHeight(height);
+    }
+
+    // A small safety margin absorbs per-glyph width rounding so nanovg never
+    // re-wraps a line we already broke. Pages are filled by pixel height so a
+    // paragraph gap can be shorter than a full line.
+    const float pageHeight = height - 4.0f;
+
+    std::string buffer;                  // raw text of the current paragraph run
+    std::vector<std::string> items;      // wrapped display lines of the run
+    std::vector<std::string> pageLines;  // lines of the page being filled
+    float used = 0;
+
+    auto emitPage = [&] {
+        if (pageLines.empty()) return;
+        std::string page;
+        for (size_t i = 0; i < pageLines.size(); i++) {
+            if (i > 0) page.push_back('\n');
+            page += pageLines[i];
+        }
+        while (!page.empty() && page.back() == '\n') page.pop_back();
+        this->pages.push_back(ReaderPage{std::move(page), std::string()});
+        pageLines.clear();
+        used = 0;
+    };
+
+    auto wrapInto = [&](const std::string& source, int level) {
+        if (source.empty()) return;
+        const bool heading = level > 0;
+        const float size = heading ? headingSize(level) : kFontSize;
+        std::vector<std::string> lines = wrapText(
+            source, width * 0.99f, brls::Application::getDefaultFont(), size);
+        const std::string marker =
+            heading ? std::string(kBookHeadingPrefix) +
+                          std::string(1, (char)('0' + level)) + '\x01'
+                    : std::string();
+        for (std::string& wrapped : lines)
+            items.push_back(marker + wrapped);
+    };
+
+    auto flushBuffer = [&] {
+        if (buffer.empty()) return;
+        std::string source = std::move(buffer);
+        buffer.clear();
+        wrapInto(source, 0);
+    };
+
+    auto paginate = [&] {
+        for (const std::string& item : items) {
+            int level = 0;
+            std::string headingText;
+            const bool heading = parseBookHeading(item, &level, &headingText);
+            float advance = kLinePixels;
+            if (heading)
+                advance = headingAdvance(level);
+            else if (item.empty())
+                advance = kParagraphGap;
+            // Never open a page with the empty line of a paragraph break.
+            if (pageLines.empty() && item.empty()) continue;
+            if (!pageLines.empty() && used + advance > pageHeight) emitPage();
+            pageLines.push_back(item);
+            used += advance;
+        }
+        items.clear();
+    };
+
+    // Picture markers become pages of their own; headings keep their level so
+    // the page body can draw them larger.
+    const std::string& text = chapter.text;
+    const size_t markerLen = std::strlen(kBookImagePrefix);
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t newline = text.find('\n', pos);
+        std::string line = text.substr(
+            pos, newline == std::string::npos ? std::string::npos
+                                              : newline - pos);
+        if (line.compare(0, markerLen, kBookImagePrefix) == 0) {
+            flushBuffer();
+            paginate();
+            emitPage();
+            this->pages.push_back(
+                ReaderPage{std::string(), line.substr(markerLen)});
+        } else {
+            int level = 0;
+            std::string heading;
+            if (parseBookHeading(line, &level, &heading)) {
+                flushBuffer();
+                wrapInto(heading, level);
+            } else {
+                buffer += line;
+                buffer.push_back('\n');
+            }
+        }
+        if (newline == std::string::npos) break;
+        pos = newline + 1;
+    }
+    flushBuffer();
+    paginate();
+    emitPage();
+
+    if (this->pages.empty())
+        this->pages.push_back(ReaderPage{std::string(), std::string()});
 
     if (this->pageIndex >= (int)this->pages.size())
         this->pageIndex = (int)this->pages.size() - 1;
     if (this->pageIndex < 0) this->pageIndex = 0;
+    readerLog("reader: layout w=" + std::to_string((int)width) + " h=" +
+              std::to_string((int)height) + " chapter='" + chapter.title +
+              "' pages=" + std::to_string(this->pages.size()));
     this->showPage();
+    this->building = false;
+}
+
+void TextReaderPage::showImage(const std::string& entry) {
+    if (!this->imageView) return;
+    std::string bytes;
+    if (!loadBookImage(this->path, entry, &bytes)) {
+        this->imageView->clear();
+        readerLog("reader: image missing '" + entry + "'");
+        return;
+    }
+    // Free the previous texture first so flipping through a picture book keeps
+    // one decoded image in memory at a time.
+    this->imageView->clear();
+    this->imageView->setFreeTexture(true);
+    this->imageView->setImageFromMem((unsigned char*)bytes.data(),
+                                     (int)bytes.size());
 }
 
 void TextReaderPage::showPage() {
     if (!this->book.ok) return;
     if (this->pages.empty()) {
-        this->pageLabel->setText("cloud/reader/empty"_i18n);
+        this->pageView->setVisibility(brls::Visibility::VISIBLE);
+        if (this->imageView)
+            this->imageView->setVisibility(brls::Visibility::GONE);
+        this->pageView->setPage("cloud/reader/empty"_i18n);
         this->updateStatus();
         return;
     }
     if (this->pageIndex < 0) this->pageIndex = 0;
     if (this->pageIndex >= (int)this->pages.size())
         this->pageIndex = (int)this->pages.size() - 1;
-    this->pageLabel->setText(this->pages[this->pageIndex]);
+
+    const ReaderPage& page = this->pages[this->pageIndex];
+    if (page.image.empty()) {
+        if (this->imageView)
+            this->imageView->setVisibility(brls::Visibility::GONE);
+        this->pageView->setVisibility(brls::Visibility::VISIBLE);
+        this->pageView->setPage(page.text);
+    } else {
+        this->pageView->setVisibility(brls::Visibility::GONE);
+        if (this->imageView)
+            this->imageView->setVisibility(brls::Visibility::VISIBLE);
+        this->showImage(page.image);
+    }
     this->updateStatus();
 }
 
 void TextReaderPage::updateStatus() {
     std::string page = brls::getStr("cloud/reader/page", this->pageIndex + 1,
                                     (int)this->pages.size());
+    if (this->pageIndex >= 0 && this->pageIndex < (int)this->pages.size() &&
+        !this->pages[this->pageIndex].image.empty())
+        page = "cloud/reader/picture"_i18n + "   " + page;
     std::string chapter;
     if (this->chapterIndex < this->book.chapters.size())
         chapter = this->book.chapters[this->chapterIndex].title;
@@ -433,6 +689,32 @@ void TextReaderPage::previousChapter() {
     this->chapterIndex--;
     this->pageIndex = 0;
     this->rebuildPages();
+}
+
+void TextReaderPage::showToc() {
+    if (!this->book.ok || this->book.chapters.empty()) return;
+
+    std::vector<std::string> names;
+    names.reserve(this->book.chapters.size());
+    for (size_t i = 0; i < this->book.chapters.size(); i++) {
+        std::string title = this->book.chapters[i].title;
+        if (title.empty())
+            title = brls::getStr("cloud/reader/chapter_n", (int)i + 1);
+        names.push_back((i == this->chapterIndex ? "▶ " : "   ") + title);
+    }
+    brls::Dropdown* dropdown = new brls::Dropdown(
+        "cloud/reader/toc"_i18n, names,
+        [this, alive = this->alive](int selected) {
+            if (!*alive) return;
+            if (selected < 0 ||
+                selected >= (int)this->book.chapters.size())
+                return;
+            this->chapterIndex = (size_t)selected;
+            this->pageIndex = 0;
+            this->rebuildPages();
+        },
+        (int)this->chapterIndex);
+    brls::Application::pushActivity(new brls::Activity(dropdown));
 }
 
 }  // namespace cloud

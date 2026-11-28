@@ -81,6 +81,16 @@ static std::string lowerName(const std::string& name) {
     return value;
 }
 
+/// macOS / Windows metadata files that every network share carries. They look
+/// like media by extension but are resource forks: playing one fails with
+/// "unrecognized file format", so they are kept out of the listing.
+static bool isSystemJunk(const std::string& name) {
+    if (name.size() >= 2 && name[0] == '.' && name[1] == '_') return true;
+    const std::string lower = lowerName(name);
+    return lower == ".ds_store" || lower == "desktop.ini" ||
+           lower == "thumbs.db" || lower == "ehthumbs.db";
+}
+
 static std::string formatSize(uint64_t bytes) {
     const char* units[] = {"B", "KB", "MB", "GB", "TB"};
     double value = (double)bytes;
@@ -802,6 +812,9 @@ public:
     void onFocusGained() override {
         RecyclingGridItem::onFocusGained();
         this->refreshFocusStyle();
+        // Reloads (pagination, sorting) re-select the grid's default cell; keep
+        // it on the cell the user actually points at.
+        this->page->noteCellFocus(this->getIndex());
     }
 
     void onFocusLost() override {
@@ -1222,6 +1235,14 @@ void FileListPage::buildHome() {
     this->emptyView = new CloudEmptyView();
     this->emptyView->setVisibility(brls::Visibility::GONE);
     this->addView(this->emptyView);
+
+    // Y clears the whole list; X on an item offers a per-entry removal.
+    this->registerAction(
+        "cloud/recent/clear"_i18n, brls::BUTTON_Y,
+        [this](brls::View*) -> bool {
+            this->confirmClearRecent();
+            return true;
+        });
 }
 
 void FileListPage::updateBreadcrumb() {
@@ -1350,6 +1371,7 @@ void FileListPage::refresh() {
     source->files.clear();
     this->page = 0;
     this->total = -1;
+    this->lastPageFull = true;
 
     if (!loggedIn) {
         this->grid->reloadData();
@@ -1380,6 +1402,7 @@ void FileListPage::refreshRecent() {
     // pictures stay in the browser: a TV home is built around covers.
     std::vector<DriveFile> files;
     for (const DriveFile& file : RecentStore::instance().files()) {
+        if (isSystemJunk(file.name)) continue;
         if (file.mediaKind() != MediaKind::Video) continue;
         files.push_back(file);
         if (files.size() >= kHomeMaxItems) break;
@@ -1479,6 +1502,10 @@ void FileListPage::toggleViewMode() {
 void FileListPage::loadNextPage() {
     if (this->mode == Mode::Recent) return;
     if (this->loading) return;
+    // A short previous page means the folder ended there. Without this the
+    // grid would keep asking for the next page on folders whose provider does
+    // not report a total, and the empty reply rebuilt the list mid-navigation.
+    if (this->page > 0 && !this->lastPageFull) return;
     if (this->total >= 0 &&
         (int)((FileListDataSource*)this->dataSource)->files.size() >=
             this->total)
@@ -1532,8 +1559,11 @@ void FileListPage::applyFiles(const std::vector<DriveFile>& files, int total,
 
     this->page += 1;
     this->total = total;
+    this->lastPageFull = (int)files.size() >= kPageSize;
+    const size_t before = source->files.size();
 
     for (auto file : files) {
+        if (isSystemJunk(file.name)) continue;
         if (this->mode == Mode::Picker && !file.isDir) continue;
         // Remember where the entry lives: the player looks for subtitles in the
         // same directory, also when playback is started from the recent list.
@@ -1542,6 +1572,11 @@ void FileListPage::applyFiles(const std::vector<DriveFile>& files, int total,
     }
 
     this->applySort();
+
+    // An extra page that adds nothing must not rebuild the grid: every reload
+    // recycles the cell objects and moves the focus somewhere else while the
+    // user is still navigating.
+    if (!firstPage && source->files.size() == before) return;
 
     // Only treat the folder as empty when the server says so: an empty page
     // for a non-empty folder would otherwise flash the empty state illustration
@@ -1555,21 +1590,33 @@ void FileListPage::applyFiles(const std::vector<DriveFile>& files, int total,
     // back to the list once the cells exist.
     bool focusWasEmpty = isFocusWithin(brls::Application::getCurrentFocus(),
                                        this->emptyView);
+    // The grid is about to throw every cell away; remember whether the user
+    // was pointing at an entry so the focus can be put back on that entry.
+    bool focusInGrid = isFocusWithin(brls::Application::getCurrentFocus(),
+                                     this->grid);
     this->showGrid();
     this->updateSubtitle();
 
     // The client-side sort can move freshly loaded pages into the middle of
     // the list, so existing cells have to be rebound. Keep the scroll position
     // for pagination to avoid jumping back to the top.
-    float offset = this->grid->getContentOffsetY();
+    const float offset = firstPage ? 0.0f : this->grid->getContentOffsetY();
     this->grid->reloadData();
-    if (!firstPage) {
-        auto alive = this->alive;
-        brls::delay(100, [this, alive, offset] {
-            if (!*alive) return;
-            this->grid->setContentOffsetY(offset, false);
-        });
+
+    // Cells are recycled views: without this the focus stayed on a cell object
+    // that now shows another entry (or nothing at all), which looked like the
+    // selection jumping to the top of the list. Re-anchor it by index.
+    if (focusInGrid) {
+        brls::View* cell = this->grid->getGridItemByIndex(
+            this->grid->getDefaultCellFocus());
+        if (!cell) cell = this->grid->getGridItemByIndex(0);
+        if (cell && brls::Application::getCurrentFocus() != cell)
+            brls::Application::giveFocus(cell);
     }
+    // Restore immediately: reloadData() re-selects the default cell and resets
+    // the scroll, and the old delayed restore let the list bounce between the
+    // two positions while pages were loading.
+    this->grid->setContentOffsetY(offset, false);
 
     if (focusWasEmpty) {
         brls::Application::giveFocus(this->grid);
@@ -1591,6 +1638,13 @@ void FileListPage::enterFolder(const std::string& dirId,
     listLog("list: enter '" + name + "' depth=" +
             std::to_string(this->pathStack.size() + 1));
     this->pathStack.emplace_back(dirId, name);
+    // A new directory starts at its first entry. The grid otherwise re-selects
+    // the cell index that was focused in the folder opened before, which looks
+    // like a random selection.
+    if (this->grid) {
+        this->grid->setDefaultCellFocus(0);
+        this->grid->setContentOffsetY(0, false);
+    }
     this->updateBreadcrumb();
     this->refresh();
 }
@@ -1601,6 +1655,10 @@ bool FileListPage::goUp() {
     if (this->pathStack.size() <= 1) return false;  // let the activity pop
     listLog("list: go up depth=" + std::to_string(this->pathStack.size()));
     this->pathStack.pop_back();
+    if (this->grid) {
+        this->grid->setDefaultCellFocus(0);
+        this->grid->setContentOffsetY(0, false);
+    }
     this->updateBreadcrumb();
     this->refresh();
     return true;
@@ -1699,7 +1757,15 @@ void FileListPage::openItem(size_t index) {
     }
 }
 
+void FileListPage::noteCellFocus(size_t index) {
+    if (this->grid) this->grid->setDefaultCellFocus(index);
+}
+
 void FileListPage::showItemActions(size_t index) {
+    if (this->mode == Mode::Recent) {
+        this->showRecentActions(index);
+        return;
+    }
     if (this->mode != Mode::Browse) return;
     if (this->mode == Mode::Picker) return;
     auto* source = (FileListDataSource*)this->dataSource;
@@ -1730,6 +1796,45 @@ void FileListPage::showItemActions(size_t index) {
             }
         });
     brls::Application::pushActivity(new brls::Activity(dropdown));
+}
+
+void FileListPage::showRecentActions(size_t index) {
+    auto* source = (FileListDataSource*)this->dataSource;
+    if (!source || index >= source->files.size()) return;
+    DriveFile file = source->files[index];
+
+    std::vector<std::string> options = {"cloud/recent/remove"_i18n,
+                                        "cloud/recent/clear"_i18n};
+    auto choice = std::make_shared<int>(-1);
+    brls::Dropdown* dropdown = new brls::Dropdown(
+        file.name, options, [choice](int selected) { *choice = selected; }, 0,
+        // Deferred like the browser menu: the dropdown pops itself before the
+        // dialog would open.
+        [this, file, choice](int) {
+            if (*choice == 0) {
+                RecentStore::instance().remove(file);
+                this->refreshRecent();
+                brls::Application::notify("cloud/recent/removed"_i18n);
+            } else if (*choice == 1) {
+                this->confirmClearRecent();
+            }
+        });
+    brls::Application::pushActivity(new brls::Activity(dropdown));
+}
+
+void FileListPage::confirmClearRecent() {
+    if (this->mode != Mode::Recent) return;
+    if (RecentStore::instance().files().empty()) return;
+
+    auto* dialog = new brls::Dialog("cloud/recent/clear_confirm"_i18n);
+    dialog->addButton("cloud/files/action/cancel"_i18n, [] {});
+    dialog->addButton("cloud/recent/clear"_i18n, [this] {
+        RecentStore::instance().clear();
+        this->refreshRecent();
+        brls::Application::notify("cloud/recent/cleared"_i18n);
+    });
+    dialog->setCancelable(true);
+    dialog->open();
 }
 
 void FileListPage::promptMakeDir() {

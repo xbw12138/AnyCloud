@@ -45,6 +45,22 @@ constexpr int kClientTimeoutSeconds = 15;
 /// threads are therefore created here instead, and simply live until exit.
 bool spawnThread(void* (*entry)(void*), void* arg);
 
+/// True when nothing listens on `port` on loopback. Binding only succeeds on a
+/// free port, which is how start() notices that the listener disappeared.
+bool portIsFree(int port) {
+    int fd = (int)::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return false;
+    struct sockaddr_in address;
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_port = htons((uint16_t)port);
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    const bool free =
+        ::bind(fd, (struct sockaddr*)&address, sizeof(address)) == 0;
+    ::close(fd);
+    return free;
+}
+
 /// Temporary on-device diagnostics, same file family as the QR view's log.
 ///
 /// Raw file descriptors instead of stdio: this runs on the listener and on the
@@ -379,9 +395,26 @@ std::string SmbBridge::urlFor(const std::string& path) {
 std::string SmbBridge::start() {
     std::unique_lock<std::mutex> lock(this->mutex);
     if (this->starting) {
-        this->ready.wait_for(lock, std::chrono::seconds(3),
-                             [this] { return this->finished; });
-        return this->base;
+        if (!this->finished) {
+            this->ready.wait_for(lock, std::chrono::seconds(3),
+                                 [this] { return this->finished; });
+            return this->base;
+        }
+        // The listener can be torn down while the app keeps running (the
+        // players and libsmb2 open many sockets, and a stray close releases
+        // our descriptor). The cached url then answers "connection refused"
+        // forever, so re-check that the port is actually still bound.
+        const int port = this->listenPort;
+        lock.unlock();
+        const bool alive = port > 0 && !portIsFree(port);
+        lock.lock();
+        if (alive) return this->base;
+        logDebug("bridge: listener on " + std::to_string(port) +
+                 " is gone, restarting");
+        this->starting = false;
+        this->finished = false;
+        this->base.clear();
+        this->listenPort = 0;
     }
     this->starting = true;
     lock.unlock();
@@ -469,6 +502,7 @@ void SmbBridge::run() {
         this->base = listener >= 0
                          ? "http://127.0.0.1:" + std::to_string(port)
                          : std::string();
+        this->listenPort = listener >= 0 ? port : 0;
         this->finished = true;
     }
     logDebug(std::string("bridge: listen ") +

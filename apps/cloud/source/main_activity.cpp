@@ -5,9 +5,11 @@
 #include "cloud/main_activity.hpp"
 
 #include "cloud/drive/drive_manager.hpp"
+#include "cloud/drive/music_session.hpp"
 #include "cloud/pages/downloads_page.hpp"
 #include "cloud/pages/file_list_page.hpp"
 #include "cloud/pages/profile_page.hpp"
+#include "cloud/ui/now_playing_overlay.hpp"
 #include "cloud/update_check.hpp"
 #include "nxkit/ui/auto_tab_frame.hpp"
 
@@ -139,7 +141,17 @@ brls::View* MainActivity::createContentView() {
         });
     });
 
-    return tabs;
+    // Wrap the tabs so the "now playing" pill can float over every section.
+    brls::Box* root = new brls::Box(brls::Axis::COLUMN);
+    root->setGrow(1);
+    root->setBackgroundColor(theme["cloud/bg"]);
+    tabs->setGrow(1);
+    root->addView(tabs);
+
+    // "Now playing" pill + R3 back to the player, shared with the viewers.
+    attachNowPlayingOverlay(root);
+
+    return root;
 }
 
 }  // namespace cloud

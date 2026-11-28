@@ -45,6 +45,9 @@ public:
     void openItem(size_t index);
     /// Shows the actions menu for the item at `index` (X button).
     void showItemActions(size_t index);
+    /// Keeps the grid's default focus on the cell the user is on, so reloading
+    /// a page never yanks the list back to the first row.
+    void noteCellFocus(size_t index);
     /// Downloads a cover image with the headers of `providerId` (falling back
     /// to the page's provider when empty). `callback` runs on the UI thread
     /// with the encoded bytes (empty on failure).
@@ -74,6 +77,9 @@ private:
     void refreshRecent();
     void applySort();
     void showSortMenu();
+    /// Recent mode: remove the entry or clear the whole list (X / Y).
+    void showRecentActions(size_t index);
+    void confirmClearRecent();
     void toggleViewMode();
     void updateBreadcrumb();
     void updateSubtitle();
@@ -121,6 +127,9 @@ private:
     int page = 0;
     int total = -1;
     bool loading = false;
+    /// True when the last fetched page was full; a short page means the folder
+    /// ended there even if the provider reports no total.
+    bool lastPageFull = true;
     /// Login state at the last refresh, used to reload after signing in.
     bool wasLoggedIn = false;
     /// DriveManager generation when the list was loaded; a different value in

@@ -18,7 +18,14 @@
 
 namespace cloud {
 
+const char* const kBookImagePrefix = "\x01IMG:";
+const char* const kBookHeadingPrefix = "\x01H";
+
 namespace {
+
+/// Declared here because htmlToText (below) needs them; defined further down.
+std::string attribute(const std::string& tag, const std::string& name);
+std::string resolvePath(const std::string& baseDir, const std::string& href);
 
 constexpr uint32_t kEocdSig = 0x06054b50;
 constexpr uint32_t kZip64LocatorSig = 0x07064b50;
@@ -205,8 +212,17 @@ std::string stripTags(const std::string& text) {
     return trim(decodeEntities(out));
 }
 
-/// Turns an XHTML document into reflowable plain text.
-std::string htmlToText(const std::string& html) {
+/// Formats NanoVG can decode; anything else is left out of the text.
+bool isImageName(const std::string& name) {
+    std::string ext = lowerExtension(name);
+    return ext == "jpg" || ext == "jpeg" || ext == "png" || ext == "gif" ||
+           ext == "bmp";
+}
+
+/// Turns an XHTML document into reflowable plain text. Inline images become
+/// marker lines carrying their path inside the archive, resolved against
+/// `baseDir` (the directory the document lives in).
+std::string htmlToText(const std::string& html, const std::string& baseDir) {
     size_t start = 0;
     size_t body = findInsensitive(html, "<body", 0);
     if (body != std::string::npos) {
@@ -287,6 +303,30 @@ std::string htmlToText(const std::string& html) {
             }
             continue;
         }
+        if (lower == "img" || lower == "image") {
+            // <img src> and the SVG wrapper <image xlink:href> both end up as
+            // one picture marker line.
+            std::string src = attribute(tag, "src");
+            if (src.empty()) src = attribute(tag, "xlink:href");
+            if (!src.empty() && src.compare(0, 5, "data:") != 0 &&
+                src.find("://") == std::string::npos) {
+                std::string entry = resolvePath(baseDir, src);
+                if (isImageName(entry))
+                    raw += std::string(kBookImagePrefix) + entry + '\n';
+            }
+            continue;
+        }
+        // h1-h6 keep their level: the reader draws headings larger and bold.
+        if (lower.size() == 2 && lower[0] == 'h' && lower[1] >= '1' &&
+            lower[1] <= '6') {
+            raw.push_back('\n');
+            if (!closing) {
+                raw += kBookHeadingPrefix;
+                raw.push_back(lower[1]);
+                raw.push_back('\x01');
+            }
+            continue;
+        }
         if (isBlock(lower)) raw.push_back('\n');
     }
 
@@ -332,18 +372,8 @@ std::string htmlToText(const std::string& html) {
 }
 
 std::string extractTitle(const std::string& html) {
-    size_t start = findInsensitive(html, "<title", 0);
-    if (start != std::string::npos) {
-        size_t open = html.find('>', start);
-        size_t end = open == std::string::npos
-                         ? std::string::npos
-                         : findInsensitive(html, "</title", open);
-        if (open != std::string::npos && end != std::string::npos) {
-            std::string title =
-                stripTags(html.substr(open + 1, end - open - 1));
-            if (!title.empty()) return title;
-        }
-    }
+    // The first heading is the real chapter title; the HTML <title> is often
+    // just the file name ("ch005.xhtml") in generated books.
     for (const char* tag : {"h1", "h2", "h3"}) {
         size_t begin = findInsensitive(html, std::string("<") + tag, 0);
         if (begin == std::string::npos) continue;
@@ -355,6 +385,24 @@ std::string extractTitle(const std::string& html) {
         if (open == std::string::npos || end == std::string::npos) continue;
         std::string title = stripTags(html.substr(open + 1, end - open - 1));
         if (!title.empty()) return title;
+    }
+
+    size_t start = findInsensitive(html, "<title", 0);
+    if (start != std::string::npos) {
+        size_t open = html.find('>', start);
+        size_t end = open == std::string::npos
+                         ? std::string::npos
+                         : findInsensitive(html, "</title", open);
+        if (open != std::string::npos && end != std::string::npos) {
+            std::string title =
+                stripTags(html.substr(open + 1, end - open - 1));
+            std::string lower = lowerCopy(title);
+            if (lower.find(".xhtml") == std::string::npos &&
+                lower.find(".html") == std::string::npos &&
+                lower.find(".htm") == std::string::npos &&
+                lower.find(".xml") == std::string::npos)
+                return title;
+        }
     }
     return std::string();
 }
@@ -646,7 +694,36 @@ std::string resolvePath(const std::string& baseDir, const std::string& href) {
 struct ManifestItem {
     std::string href;
     std::string mediaType;
+    std::string properties;
 };
+
+/// Whether a space separated attribute list (e.g. manifest properties) holds
+/// `token`.
+bool hasToken(const std::string& value, const std::string& token) {
+    size_t pos = 0;
+    while (pos < value.size()) {
+        size_t end = value.find_first_of(" \t", pos);
+        std::string part =
+            value.substr(pos, end == std::string::npos ? std::string::npos
+                                                       : end - pos);
+        if (lowerCopy(part) == token) return true;
+        if (end == std::string::npos) break;
+        pos = end + 1;
+    }
+    return false;
+}
+
+/// EPUB 2 books have no `properties="nav"`: their table of contents is just a
+/// spine document called nav.xhtml / toc.xhtml, which would otherwise fill the
+/// reader with heading-only pages.
+bool isTocDocument(const std::string& href) {
+    std::string stem = lowerCopy(href);
+    size_t slash = stem.find_last_of('/');
+    if (slash != std::string::npos) stem = stem.substr(slash + 1);
+    size_t dot = stem.find_last_of('.');
+    if (dot != std::string::npos) stem = stem.substr(0, dot);
+    return stem == "nav" || stem == "toc" || stem == "contents";
+}
 
 BookContent loadEpub(const std::string& path) {
     BookContent content;
@@ -714,9 +791,11 @@ BookContent loadEpub(const std::string& path) {
             std::string id = attribute(tag, "id");
             std::string href = attribute(tag, "href");
             std::string mediaType = attribute(tag, "media-type");
+            std::string properties = attribute(tag, "properties");
             if (!id.empty() && !href.empty())
                 manifest.push_back(
-                    {id, ManifestItem{percentDecode(href), mediaType}});
+                    {id, ManifestItem{percentDecode(href), mediaType,
+                                      properties}});
             pos = itemEnd + 1;
         }
     }
@@ -743,7 +822,12 @@ BookContent loadEpub(const std::string& path) {
                                mediaType == "application/xhtml+xml" ||
                                mediaType == "text/html" ||
                                mediaType == "text/xml";
-                if (textual) hrefs.push_back(entry.second.href);
+                // The navigation document is a table of contents, not reading
+                // material: paginating it would fill the reader with dozens of
+                // heading-only pages before the first real chapter.
+                if (textual && !hasToken(entry.second.properties, "nav") &&
+                    !isTocDocument(entry.second.href))
+                    hrefs.push_back(entry.second.href);
                 break;
             }
             pos = itemEnd + 1;
@@ -753,8 +837,10 @@ BookContent loadEpub(const std::string& path) {
         // Broken spine: fall back to every XHTML entry in the manifest.
         for (const auto& entry : manifest) {
             const std::string& mediaType = entry.second.mediaType;
-            if (mediaType == "application/xhtml+xml" ||
-                mediaType == "text/html")
+            if ((mediaType == "application/xhtml+xml" ||
+                 mediaType == "text/html") &&
+                !hasToken(entry.second.properties, "nav") &&
+                !isTocDocument(entry.second.href))
                 hrefs.push_back(entry.second.href);
         }
     }
@@ -769,7 +855,7 @@ BookContent loadEpub(const std::string& path) {
         std::string bytes;
         if (!archive.read(entryPath, &bytes, &error)) continue;
         std::string html = subtitleToUtf8(bytes);
-        std::string text = htmlToText(html);
+        std::string text = htmlToText(html, directoryOf(entryPath));
         if (text.empty()) continue;
         BookChapter chapter;
         chapter.title = extractTitle(html);
@@ -869,6 +955,28 @@ BookContent loadText(const std::string& path) {
 BookContent loadBookFile(const std::string& path) {
     if (lowerExtension(path) == "epub") return loadEpub(path);
     return loadText(path);
+}
+
+bool loadBookImage(const std::string& bookPath, const std::string& entry,
+                   std::string* bytes) {
+    ZipArchive archive;
+    std::string error;
+    if (!archive.open(bookPath, &error)) return false;
+    return archive.read(entry, bytes, &error) && !bytes->empty();
+}
+
+bool parseBookHeading(const std::string& line, int* level,
+                      std::string* text) {
+    const size_t prefixLen = std::strlen(kBookHeadingPrefix);
+    if (line.size() < prefixLen + 2 ||
+        line.compare(0, prefixLen, kBookHeadingPrefix) != 0)
+        return false;
+    const char digit = line[prefixLen];
+    if (digit < '1' || digit > '9' || line[prefixLen + 1] != '\x01')
+        return false;
+    if (level) *level = digit - '0';
+    if (text) *text = line.substr(prefixLen + 2);
+    return true;
 }
 
 }  // namespace cloud

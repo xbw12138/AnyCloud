@@ -73,7 +73,12 @@
     "empty_desc": "Videos you played will show up here",
     "play": "Play",
     "resume": "Continue watching",
-    "provider_missing": "The drive this item belongs to is unavailable"
+    "provider_missing": "The drive this item belongs to is unavailable",
+    "remove": "Remove from recent",
+    "removed": "Removed from recent",
+    "clear": "Clear recent views",
+    "clear_confirm": "Clear all recent views?",
+    "cleared": "Recent views cleared"
   },
   "download": {
     "title": "Transfer Manager",
@@ -175,9 +180,18 @@
     "track_audio": "Audio tracks",
     "track_none": "No switchable subtitles or audio tracks",
     "audio_switched": "Audio track switched",
+    "now_playing": "Now playing",
+    "return_hint": "R3 Back to player",
+    "shuffle": "Shuffle",
+    "shuffle_on": "Shuffle on",
+    "shuffle_off": "Shuffle off",
+    "badge_shuffle": "Shuffle",
+    "badge_loop_one": "Repeat one",
+    "badge_loop_all": "Repeat all",
     "volume": "Volume",
+    "lossless": "Lossless",
     "hint_video": "A Play/Pause  ←/→ Seek  ↑/↓ Volume  L/R Prev/Next  X Loop  - Subtitles/Audio  + Playlist  Y Quality  R3 Aspect  L3 Speed  B Exit",
-    "hint_audio": "A Play/Pause  ←/→ Seek  ↑/↓ Volume  L/R Prev/Next  X Loop  + Playlist  L3 Speed  B Exit"
+    "hint_audio": "A Play/Pause · ↑/↓ Select · ←/→ Seek · L/R Track · ZL/ZR Volume · X Loop · Y Shuffle · B Exit"
   },
   "image": {
     "loading": "Loading…",
@@ -190,11 +204,14 @@
     "error": "Cannot open this book",
     "empty": "No readable text found",
     "page": "Page {0} / {1}",
+    "picture": "Illustration",
+    "toc": "Contents",
+    "chapter_n": "Chapter {0}",
     "prev": "Previous page",
     "next": "Next page",
     "prev_chapter": "Previous chapter",
     "next_chapter": "Next chapter",
-    "hint": "←/→ or L/R Page  ZL/ZR Chapter  B Back"
+    "hint": "←/→ or L/R Page  ZL/ZR Chapter  Y Contents  B Back"
   },
   "pdf": {
     "loading": "Rendering…",

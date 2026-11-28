@@ -6,11 +6,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <random>
 
 #include <borealis/core/thread.hpp>
 
@@ -18,8 +20,11 @@
 #include <switch.h>
 #endif
 
+#include "cloud/drive/music_session.hpp"
 #include "cloud/drive/playback_store.hpp"
 #include "cloud/drive/recent_store.hpp"
+#include "cloud/util/audio_name.hpp"
+#include "cloud/util/http_headers.hpp"
 #include "cloud/util/text_encoding.hpp"
 #include "cpr/async.h"
 #include "nxkit/http_client.hpp"
@@ -33,6 +38,540 @@
 using namespace brls::literals;
 
 namespace cloud {
+
+namespace {
+
+/// First UTF-8 character of `text`, used as the disc label glyph.
+std::string firstGlyph(const std::string& text) {
+    if (text.empty()) return std::string();
+    unsigned char lead = (unsigned char)text[0];
+    size_t length = lead < 0x80 ? 1 : (lead < 0xE0 ? 2 : (lead < 0xF0 ? 3 : 4));
+    if (length > text.size()) length = 1;
+    return text.substr(0, length);
+}
+
+}  // namespace
+
+/// NanoVG text measurement for the hand-drawn audio layout.
+float audioTextWidth(NVGcontext* vg, const std::string& text, float size) {
+    if (text.empty()) return 0.0f;
+    nvgFontSize(vg, size);
+    float bounds[4];
+    nvgTextBounds(vg, 0, 0, text.c_str(), nullptr, bounds);
+    return bounds[2] - bounds[0];
+}
+
+/// Cuts `text` back on UTF-8 boundaries until it fits `maxWidth` and ends it
+/// with an ellipsis: long Chinese titles would otherwise run into the tag.
+std::string audioFitText(NVGcontext* vg, const std::string& text, float size,
+                         float maxWidth) {
+    if (maxWidth <= 0) return "";
+    if (audioTextWidth(vg, text, size) <= maxWidth) return text;
+    std::string out = text;
+    while (!out.empty()) {
+        size_t cut = out.size() - 1;
+        while (cut > 0 && ((unsigned char)out[cut] & 0xC0) == 0x80) cut--;
+        out.erase(cut);
+        std::string trimmed = out + "…";
+        if (audioTextWidth(vg, trimmed, size) <= maxWidth) return trimmed;
+    }
+    return "…";
+}
+
+/// The bundled fonts only carry a regular face, so the semibold titles of the
+/// reference are faked by drawing the same text twice with a hair of offset.
+void audioDrawBold(NVGcontext* vg, float x, float y, const std::string& text,
+                   float size, NVGcolor color) {
+    nvgFontSize(vg, size);
+    nvgFillColor(vg, color);
+    nvgText(vg, x, y, text.c_str(), nullptr);
+    nvgText(vg, x + 0.6f, y, text.c_str(), nullptr);
+}
+
+/// Full-screen audio stage, laid out like a widescreen music dashboard: an
+/// immersive blue-purple backdrop, a dim spinning record with a thin tonearm on
+/// the left and the queue on the right. Everything is painted with NanoVG so
+/// the composition never depends on the box layout, and the dark palette stays
+/// identical whatever theme the app runs.
+class AudioStageView : public brls::View {
+public:
+    struct Row {
+        std::string title;
+        std::string artist;
+        std::string tag;
+    };
+
+    AudioStageView() { this->setFocusable(false); }
+
+    void setQueue(std::vector<Row> rows, size_t index) {
+        this->rows = std::move(rows);
+        this->index = index;
+        this->selected = index;
+        this->invalidate();
+    }
+
+    void setIndex(size_t value) {
+        this->index = value;
+        this->selected = value;
+        this->invalidate();
+    }
+
+    /// Row the D-pad is pointing at; A starts it.
+    void setSelection(size_t value) {
+        if (this->selected == value) return;
+        this->selected = value;
+        this->invalidate();
+    }
+
+    /// Shuffle on/off and loop mode (0 off, 1 one, 2 all) for the header
+    /// badges.
+    void setModes(bool shuffleValue, int loopValue) {
+        if (this->shuffle == shuffleValue && this->loopMode == loopValue)
+            return;
+        this->shuffle = shuffleValue;
+        this->loopMode = loopValue;
+        this->invalidate();
+    }
+
+    void setGlyph(std::string value) {
+        this->glyph = std::move(value);
+        this->invalidate();
+    }
+
+    void setPlaying(bool value) {
+        if (this->playing == value) return;
+        this->playing = value;
+        this->invalidate();
+    }
+
+    void setProgress(double elapsed, double duration) {
+        if (elapsed == this->elapsed && duration == this->duration) return;
+        this->elapsed = elapsed;
+        this->duration = duration;
+        this->invalidate();
+    }
+
+    void setStatus(std::string value) {
+        if (value == this->status) return;
+        this->status = std::move(value);
+        this->invalidate();
+    }
+
+    void setHint(std::string value) { this->hint = std::move(value); }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override {
+        if (width <= 0 || height <= 0) return;
+        nvgFontFaceId(vg, brls::Application::getDefaultFont());
+        this->drawBackdrop(vg, x, y, width, height);
+        this->drawDisc(vg, x, y, width, height);
+        this->drawQueue(vg, x, y, width, height);
+        this->drawFooter(vg, x, y, width, height);
+    }
+
+private:
+    static std::string timeText(double seconds) {
+        if (seconds < 0) seconds = 0;
+        const int total = (int)seconds;
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%02d:%02d", total / 60, total % 60);
+        return buf;
+    }
+
+    /// Diagonal blue-grey to deep purple, a cool wash in the upper left, a
+    /// purple haze in the lower right and a vignette: at first glance the
+    /// layers read like a blurred, frosted cover.
+    void drawBackdrop(NVGcontext* vg, float x, float y, float width,
+                      float height) {
+        NVGpaint base = nvgLinearGradient(vg, x, y, x + width, y + height,
+                                          nvgRGB(46, 58, 84),
+                                          nvgRGB(36, 27, 50));
+        nvgBeginPath(vg);
+        nvgRect(vg, x, y, width, height);
+        nvgFillPaint(vg, base);
+        nvgFill(vg);
+
+        NVGpaint cool = nvgRadialGradient(
+            vg, x + width * 0.14f, y + height * 0.08f, 0.0f, width * 0.72f,
+            nvgRGBA(118, 143, 188, 100), nvgRGBA(118, 143, 188, 0));
+        nvgBeginPath(vg);
+        nvgRect(vg, x, y, width, height);
+        nvgFillPaint(vg, cool);
+        nvgFill(vg);
+
+        NVGpaint purple = nvgRadialGradient(
+            vg, x + width * 0.88f, y + height * 1.04f, 0.0f, width * 0.70f,
+            nvgRGBA(98, 61, 134, 115), nvgRGBA(98, 61, 134, 0));
+        nvgBeginPath(vg);
+        nvgRect(vg, x, y, width, height);
+        nvgFillPaint(vg, purple);
+        nvgFill(vg);
+
+        NVGpaint wash = nvgRadialGradient(
+            vg, x + width * 0.24f, y + height * 0.52f, 0.0f, width * 0.30f,
+            nvgRGBA(255, 255, 255, 16), nvgRGBA(255, 255, 255, 0));
+        nvgBeginPath(vg);
+        nvgRect(vg, x, y, width, height);
+        nvgFillPaint(vg, wash);
+        nvgFill(vg);
+
+        NVGpaint vignette = nvgRadialGradient(
+            vg, x + width * 0.5f, y + height * 0.5f, height * 0.34f,
+            height * 0.98f, nvgRGBA(6, 8, 16, 0), nvgRGBA(6, 8, 16, 118));
+        nvgBeginPath(vg);
+        nvgRect(vg, x, y, width, height);
+        nvgFillPaint(vg, vignette);
+        nvgFill(vg);
+    }
+
+    void drawDisc(NVGcontext* vg, float x, float y, float width,
+                  float height) {
+        const auto now = std::chrono::steady_clock::now();
+        if (this->last.time_since_epoch().count() != 0) {
+            double dt =
+                std::chrono::duration<double>(now - this->last).count();
+            if (dt > 0.25) dt = 0.25;
+            if (this->playing) this->angle += (float)(dt * 8.0);
+            if (this->angle >= 360.0f) this->angle -= 360.0f;
+        }
+        this->last = now;
+
+        const float r = height * 0.215f;
+        const float cx = x + width * 0.255f;
+        const float cy = y + height * 0.545f;
+
+        NVGpaint bloom = nvgRadialGradient(
+            vg, cx, cy, r * 0.20f, r * 1.75f, nvgRGBA(152, 174, 216, 42),
+            nvgRGBA(152, 174, 216, 0));
+        nvgBeginPath(vg);
+        nvgCircle(vg, cx, cy, r * 1.75f);
+        nvgFillPaint(vg, bloom);
+        nvgFill(vg);
+
+        // Translucent vinyl: the backdrop keeps glowing through the record.
+        NVGpaint body = nvgRadialGradient(
+            vg, cx - r * 0.25f, cy - r * 0.30f, r * 0.05f, r * 1.05f,
+            nvgRGBA(33, 42, 64, 120), nvgRGBA(10, 13, 24, 178));
+        nvgBeginPath(vg);
+        nvgCircle(vg, cx, cy, r);
+        nvgFillPaint(vg, body);
+        nvgFill(vg);
+
+        // Grooves and label rotate together.
+        nvgSave(vg);
+        nvgTranslate(vg, cx, cy);
+        nvgRotate(vg, NVG_PI / 180.0f * this->angle);
+        for (int i = 0; i < 18; i++) {
+            nvgBeginPath(vg);
+            nvgCircle(vg, 0, 0, r * (0.36f + 0.034f * (float)i));
+            nvgStrokeColor(vg, nvgRGBA(255, 255, 255, i % 3 == 0 ? 15 : 8));
+            nvgStrokeWidth(vg, 1.0f);
+            nvgStroke(vg);
+        }
+        nvgBeginPath(vg);
+        nvgCircle(vg, 0, 0, r * 0.34f);
+        nvgFillColor(vg, nvgRGBA(255, 255, 255, 12));
+        nvgFill(vg);
+        nvgBeginPath(vg);
+        nvgCircle(vg, 0, 0, r * 0.34f);
+        nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 20));
+        nvgStrokeWidth(vg, 1.0f);
+        nvgStroke(vg);
+        if (!this->glyph.empty()) {
+            nvgFontSize(vg, r * 0.24f);
+            nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+            nvgFillColor(vg, nvgRGBA(255, 255, 255, 34));
+            nvgText(vg, 0, 2.0f, this->glyph.c_str(), nullptr);
+        }
+        nvgRestore(vg);
+
+        nvgBeginPath(vg);
+        nvgCircle(vg, cx, cy, r);
+        nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 24));
+        nvgStrokeWidth(vg, 1.2f);
+        nvgStroke(vg);
+
+        nvgBeginPath(vg);
+        nvgCircle(vg, cx, cy, r * 0.018f);
+        nvgFillColor(vg, nvgRGBA(8, 10, 18, 200));
+        nvgFill(vg);
+
+        // Glossy sweep over the upper left of the vinyl.
+        NVGpaint sheen = nvgRadialGradient(
+            vg, cx - r * 0.35f, cy - r * 0.40f, 1.0f, r * 0.92f,
+            nvgRGBA(255, 255, 255, 32), nvgRGBA(255, 255, 255, 0));
+        nvgBeginPath(vg);
+        nvgCircle(vg, cx, cy, r);
+        nvgFillPaint(vg, sheen);
+        nvgFill(vg);
+
+        // Tonearm: a slim arm from above the record, dot stylus on the groove.
+        const float pivotX = cx + r * 0.55f;
+        const float pivotY = cy - r * 2.05f;
+        const float tipX = cx + r * 0.34f;
+        const float tipY = cy - r * 0.78f;
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, pivotX, pivotY);
+        nvgLineTo(vg, tipX, tipY);
+        nvgStrokeColor(vg, nvgRGBA(226, 232, 244, 150));
+        nvgStrokeWidth(vg, 1.8f);
+        nvgLineCap(vg, NVG_ROUND);
+        nvgStroke(vg);
+        nvgBeginPath(vg);
+        nvgCircle(vg, pivotX, pivotY, 4.5f);
+        nvgStrokeColor(vg, nvgRGBA(226, 232, 244, 165));
+        nvgStrokeWidth(vg, 1.6f);
+        nvgStroke(vg);
+        nvgBeginPath(vg);
+        nvgCircle(vg, tipX, tipY, 3.2f);
+        nvgFillColor(vg, nvgRGBA(236, 240, 248, 220));
+        nvgFill(vg);
+        nvgLineCap(vg, NVG_BUTT);
+
+        if (this->playing) return;
+
+        nvgBeginPath(vg);
+        nvgCircle(vg, cx, cy, r);
+        nvgFillColor(vg, nvgRGBA(8, 10, 18, 90));
+        nvgFill(vg);
+        const float s = r * 0.13f;
+        nvgBeginPath(vg);
+        nvgMoveTo(vg, cx - s * 0.5f, cy - s);
+        nvgLineTo(vg, cx + s * 1.0f, cy);
+        nvgLineTo(vg, cx - s * 0.5f, cy + s);
+        nvgClosePath(vg);
+        nvgFillColor(vg, nvgRGBA(255, 255, 255, 200));
+        nvgFill(vg);
+    }
+
+    /// "当前播放 (147)" plus the rows around the selected entry: number, white
+    /// title, orange tag, dim artist. The row under the D-pad is highlighted,
+    /// the playing row gets a white outline and an animated equalizer.
+    void drawQueue(NVGcontext* vg, float x, float y, float width,
+                   float height) {
+        const float listX = x + width * 0.515f;
+        const float listW = width * 0.425f;
+        const float headerY = y + height * 0.100f;
+        const float rowH = height * 0.0736f;
+        const float firstY = y + height * 0.165f;
+        const int visible = 10;
+
+        nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+        const std::string heading = brls::getStr("cloud/player/now_playing");
+        audioDrawBold(vg, listX, headerY, heading, 26.0f,
+                      nvgRGBA(255, 255, 255, 238));
+        const float headingWidth = audioTextWidth(vg, heading, 26.0f) + 0.6f;
+
+        nvgFontSize(vg, 16.0f);
+        nvgFillColor(vg, nvgRGBA(255, 255, 255, 96));
+        const std::string count = "(" + std::to_string(this->rows.size()) + ")";
+        nvgText(vg, listX + headingWidth + 14.0f, headerY + 1.5f,
+                count.c_str(), nullptr);
+
+        // Mode badges on the right of the header: shuffle and loop state.
+        float badgeRight = listX + listW;
+        auto drawBadge = [&](const std::string& text, NVGcolor fill,
+                             NVGcolor color) {
+            const float fontSize = 12.0f;
+            const float widthOf = audioTextWidth(vg, text, fontSize) + 18.0f;
+            badgeRight -= widthOf;
+            nvgBeginPath(vg);
+            nvgRoundedRect(vg, badgeRight, headerY - 10.5f, widthOf, 21.0f,
+                           10.5f);
+            nvgFillColor(vg, fill);
+            nvgFill(vg);
+            nvgFontSize(vg, fontSize);
+            nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+            nvgFillColor(vg, color);
+            nvgText(vg, badgeRight + widthOf * 0.5f, headerY + 0.5f,
+                    text.c_str(), nullptr);
+            badgeRight -= 8.0f;
+        };
+        if (this->loopMode != 0) {
+            drawBadge(brls::getStr(this->loopMode == 1
+                                       ? "cloud/player/badge_loop_one"
+                                       : "cloud/player/badge_loop_all"),
+                      nvgRGBA(255, 255, 255, 22),
+                      nvgRGBA(255, 255, 255, 190));
+        }
+        if (this->shuffle) {
+            drawBadge("cloud/player/badge_shuffle"_i18n,
+                      nvgRGBA(255, 92, 60, 40), nvgRGBA(255, 140, 108, 235));
+        }
+
+        if (this->rows.empty()) return;
+
+        // Keep the D-pad selection on the third visible row while scrolling.
+        int first = 0;
+        if (this->selected > 2) first = (int)this->selected - 2;
+        if (first + visible > (int)this->rows.size())
+            first = (int)this->rows.size() > visible
+                        ? (int)this->rows.size() - visible
+                        : 0;
+
+        for (int i = 0; i < visible; i++) {
+            const int rowIndex = first + i;
+            if (rowIndex >= (int)this->rows.size()) break;
+            const Row& row = this->rows[rowIndex];
+            const bool current = (size_t)rowIndex == this->index;
+            const bool selectedRow = (size_t)rowIndex == this->selected;
+            const float yc = firstY + rowH * (float)i;
+
+            if (current) {
+                nvgBeginPath(vg);
+                nvgRoundedRect(vg, listX - 16.0f, yc - rowH * 0.42f,
+                               listW + 16.0f, rowH * 0.84f, 9.0f);
+                nvgFillColor(vg, nvgRGBA(255, 255, 255, 14));
+                nvgFill(vg);
+                nvgStrokeColor(vg, nvgRGBA(255, 255, 255, selectedRow ? 235 : 200));
+                nvgStrokeWidth(vg, 1.6f);
+                nvgStroke(vg);
+
+                // Three little bars where the row number sits: they dance
+                // while the track plays and freeze when paused.
+                const double phase =
+                    (double)std::chrono::steady_clock::now()
+                        .time_since_epoch()
+                        .count() /
+                    1000000000.0;
+                const float baseX = listX + 2.0f;
+                const float heights[3] = {7.0f, 11.0f, 8.5f};
+                for (int b = 0; b < 3; b++) {
+                    float h = heights[b];
+                    if (this->playing)
+                        h += 3.5f * (float)std::sin(phase * 6.0 + b * 1.9);
+                    nvgBeginPath(vg);
+                    nvgRoundedRect(vg, baseX + b * 6.0f, yc + 7.0f - h, 4.0f,
+                                   h, 2.0f);
+                    nvgFillColor(vg, nvgRGBA(255, 84, 112, 255));
+                    nvgFill(vg);
+                }
+            } else {
+                if (selectedRow) {
+                    nvgBeginPath(vg);
+                    nvgRoundedRect(vg, listX - 16.0f, yc - rowH * 0.40f,
+                                   listW + 16.0f, rowH * 0.80f, 9.0f);
+                    nvgFillColor(vg, nvgRGBA(255, 255, 255, 20));
+                    nvgFill(vg);
+                }
+                nvgFontSize(vg, 15.0f);
+                nvgTextAlign(vg, NVG_ALIGN_RIGHT | NVG_ALIGN_MIDDLE);
+                nvgFillColor(vg, nvgRGBA(255, 255, 255,
+                                         selectedRow ? 190 : 105));
+                const std::string number = std::to_string(rowIndex + 1);
+                nvgText(vg, listX + 24.0f, yc, number.c_str(), nullptr);
+            }
+
+            const float titleX = listX + 44.0f;
+            const float titleSize = 21.0f;
+            const float tagSize = 11.5f;
+            const float artistSize = 14.5f;
+
+            const float tagW =
+                row.tag.empty() ? 0.0f : audioTextWidth(vg, row.tag, tagSize) + 16.0f;
+            const std::string artistText =
+                row.artist.empty() ? std::string() : "- " + row.artist;
+            const float artistW =
+                row.artist.empty()
+                    ? 0.0f
+                    : audioTextWidth(vg, artistText, artistSize) + 12.0f;
+            const float titleMax = listX + listW - titleX - tagW - artistW -
+                                   (row.tag.empty() ? 0.0f : 12.0f);
+            const std::string title =
+                audioFitText(vg, row.title, titleSize, titleMax);
+
+            nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+            audioDrawBold(vg, titleX, yc, title, titleSize,
+                          nvgRGBA(255, 255, 255,
+                                  (current || selectedRow) ? 255 : 222));
+            float cursor = titleX + audioTextWidth(vg, title, titleSize) + 0.6f;
+
+            if (!row.tag.empty()) {
+                cursor += 12.0f;
+                nvgBeginPath(vg);
+                nvgRoundedRect(vg, cursor, yc - 9.5f, tagW, 19.0f, 9.5f);
+                nvgFillColor(vg, nvgRGBA(255, 92, 60, 34));
+                nvgFill(vg);
+                nvgFontSize(vg, tagSize);
+                nvgFillColor(vg, nvgRGBA(255, 118, 84, 235));
+                nvgText(vg, cursor + 8.0f, yc + 0.5f, row.tag.c_str(), nullptr);
+                cursor += tagW;
+            }
+
+            if (!row.artist.empty()) {
+                nvgFontSize(vg, artistSize);
+                nvgFillColor(vg, nvgRGBA(255, 255, 255, 110));
+                nvgText(vg, cursor + 12.0f, yc + 1.0f, artistText.c_str(),
+                        nullptr);
+            }
+        }
+    }
+
+    /// Under the record: transient status, a hairline progress bar with the
+    /// elapsed / total times, and the key hints across the bottom.
+    void drawFooter(NVGcontext* vg, float x, float y, float width,
+                    float height) {
+        const float r = height * 0.215f;
+        const float cx = x + width * 0.255f;
+
+        if (!this->status.empty()) {
+            nvgFontSize(vg, 13.5f);
+            nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+            nvgFillColor(vg, nvgRGBA(255, 255, 255, 150));
+            nvgText(vg, cx, y + height * 0.795f, this->status.c_str(), nullptr);
+        }
+
+        const float barY = y + height * 0.848f;
+        const float half = r * 0.92f;
+        nvgFontSize(vg, 12.5f);
+        nvgTextAlign(vg, NVG_ALIGN_RIGHT | NVG_ALIGN_MIDDLE);
+        nvgFillColor(vg, nvgRGBA(255, 255, 255, 120));
+        nvgText(vg, cx - half - 12.0f, barY, timeText(this->elapsed).c_str(),
+                nullptr);
+        nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+        nvgText(vg, cx + half + 12.0f, barY,
+                (this->duration > 0 ? timeText(this->duration) : "--:--").c_str(),
+                nullptr);
+
+        nvgBeginPath(vg);
+        nvgRoundedRect(vg, cx - half, barY - 1.5f, half * 2.0f, 3.0f, 1.5f);
+        nvgFillColor(vg, nvgRGBA(255, 255, 255, 32));
+        nvgFill(vg);
+
+        if (this->duration > 0) {
+            float progress = (float)(this->elapsed / this->duration);
+            if (progress < 0) progress = 0;
+            if (progress > 1) progress = 1;
+            nvgBeginPath(vg);
+            nvgRoundedRect(vg, cx - half, barY - 1.5f,
+                           std::max(half * 2.0f * progress, 3.0f), 3.0f, 1.5f);
+            nvgFillColor(vg, nvgRGBA(255, 120, 88, 220));
+            nvgFill(vg);
+        }
+
+        if (!this->hint.empty()) {
+            nvgFontSize(vg, 11.5f);
+            nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+            nvgFillColor(vg, nvgRGBA(255, 255, 255, 74));
+            nvgText(vg, x + width * 0.5f, y + height * 0.955f,
+                    this->hint.c_str(), nullptr);
+        }
+    }
+
+    std::vector<Row> rows;
+    size_t index = 0;
+    size_t selected = 0;
+    bool shuffle = false;
+    int loopMode = 0;
+    std::string glyph;
+    std::string status;
+    std::string hint;
+    bool playing = true;
+    double elapsed = 0;
+    double duration = 0;
+    float angle = 0.0f;
+    std::chrono::steady_clock::time_point last{};
+};
 
 namespace {
 
@@ -163,28 +702,14 @@ std::string aspectLabel(const AspectOption& option) {
     return option.label;
 }
 
+/// Random generator shared by every shuffle round of the session.
+std::mt19937& audioRng() {
+    static std::mt19937 rng(
+        (unsigned)std::chrono::steady_clock::now().time_since_epoch().count());
+    return rng;
+}
+
 }  // namespace
-
-/// Bottom OSD backdrop: fades to black so the white labels stay readable
-/// whatever is on screen.
-class PlayerOsdPanel : public brls::Box {
-public:
-    using brls::Box::Box;
-
-    void draw(NVGcontext* vg, float x, float y, float width, float height,
-              brls::Style style, brls::FrameContext* ctx) override {
-        if (width > 0 && height > 0) {
-            NVGpaint gradient = nvgLinearGradient(
-                vg, x, y, x, y + height, nvgRGBA(0, 0, 0, 0),
-                nvgRGBA(0, 0, 0, 200));
-            nvgBeginPath(vg);
-            nvgRect(vg, x, y, width, height);
-            nvgFillPaint(vg, gradient);
-            nvgFill(vg);
-        }
-        brls::Box::draw(vg, x, y, width, height, style, ctx);
-    }
-};
 
 void SeekBarView::draw(NVGcontext* vg, float x, float y, float width,
                        float height, brls::Style style,
@@ -197,7 +722,7 @@ void SeekBarView::draw(NVGcontext* vg, float x, float y, float width,
     nvgBeginPath(vg);
     nvgRoundedRect(vg, x, centerY - trackHeight * 0.5f, width, trackHeight,
                    trackHeight * 0.5f);
-    nvgFillColor(vg, nvgRGBA(255, 255, 255, 70));
+    nvgFillColor(vg, this->trackColor);
     nvgFill(vg);
 
     const float filled = width * this->progress;
@@ -212,80 +737,18 @@ void SeekBarView::draw(NVGcontext* vg, float x, float y, float width,
 
     nvgBeginPath(vg);
     nvgCircle(vg, x + filled, centerY, 7.0f);
-    nvgFillColor(vg, nvgRGBA(255, 255, 255, 255));
+    nvgFillColor(vg, this->thumbColor);
     nvgFill(vg);
-}
-
-/// Extracts one header from a CRLF separated provider header block.
-static std::string headerValue(const std::string& headers,
-                               const std::string& name) {
-    size_t start = 0;
-    while (start <= headers.size()) {
-        size_t end = headers.find('\n', start);
-        std::string line = headers.substr(
-            start, end == std::string::npos ? std::string::npos : end - start);
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line.size() > name.size() &&
-            line.compare(0, name.size(), name) == 0 &&
-            line[name.size()] == ':') {
-            size_t value = line.find_first_not_of(" \t", name.size() + 1);
-            return value == std::string::npos ? "" : line.substr(value);
-        }
-        if (end == std::string::npos) break;
-        start = end + 1;
-    }
-    return "";
-}
-
-/// Same block without the given header (mpv gets the user agent through its
-/// own property, see startUrl).
-static std::string headersWithout(const std::string& headers,
-                                  const std::string& name) {
-    std::string out;
-    size_t start = 0;
-    while (start <= headers.size()) {
-        size_t end = headers.find('\n', start);
-        std::string line = headers.substr(
-            start, end == std::string::npos ? std::string::npos : end - start);
-        std::string trimmed = line;
-        if (!trimmed.empty() && trimmed.back() == '\r') trimmed.pop_back();
-        bool drop = trimmed.size() > name.size() &&
-                    trimmed.compare(0, name.size(), name) == 0 &&
-                    trimmed[name.size()] == ':';
-        if (!drop) {
-            if (!out.empty()) out += "\r\n";
-            out += trimmed;
-        }
-        if (end == std::string::npos) break;
-        start = end + 1;
-    }
-    return out;
-}
-
-/// mpv wants extra headers as a single comma separated list, providers return
-/// them CRLF separated (as they would appear in a request).
-static std::string headersToMpv(const std::string& headers) {
-    std::string out;
-    out.reserve(headers.size());
-    for (size_t i = 0; i < headers.size(); i++) {
-        if (headers[i] == '\r') continue;
-        if (headers[i] == '\n') {
-            if (!out.empty() && out.back() != ',') out += ',';
-            continue;
-        }
-        out += headers[i];
-    }
-    while (!out.empty() && out.back() == ',') out.pop_back();
-    return out;
 }
 
 PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
                        std::vector<DriveFile> playlist, size_t index,
-                       bool isAudio)
+                       bool isAudio, bool resumeInPlace)
     : provider(std::move(provider)),
       isAudio(isAudio),
       playlist(std::move(playlist)),
-      playlistIndex(index) {
+      playlistIndex(index),
+      resumeInPlace(resumeInPlace) {
     if (this->playlist.empty()) this->playlist.push_back(DriveFile{});
     if (this->playlistIndex >= this->playlist.size())
         this->playlistIndex = this->playlist.size() - 1;
@@ -316,37 +779,53 @@ PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
     this->resumePosition = PlaybackStore::instance().position(this->file.id);
 
     if (this->isAudio) {
-        // Centered music layout.
-        this->setAlignItems(brls::AlignItems::CENTER);
-        this->setJustifyContent(brls::JustifyContent::CENTER);
+        // The stage covers the whole page and paints its own dark blue-purple
+        // backdrop, the record and the queue. Absolute NanoVG painting keeps
+        // the composition independent of the box layout and of the app theme.
+        this->setAxis(brls::Axis::COLUMN);
+        this->setAlignItems(brls::AlignItems::STRETCH);
+        this->setBackgroundColor(nvgRGBA(0, 0, 0, 0));
 
-        this->titleLabel = new brls::Label();
-        this->titleLabel->setText(this->file.name);
-        this->titleLabel->setFontSize(28);
-        this->titleLabel->setMarginBottom(20);
-        this->addView(this->titleLabel);
+        std::vector<AudioStageView::Row> rows;
+        rows.reserve(this->playlist.size());
+        for (const auto& entry : this->playlist) {
+            AudioName name = describeAudio(entry.name);
+            rows.push_back({name.title, name.artist, name.tag});
+        }
+        AudioName current = describeAudio(this->file.name);
 
-        this->osdProgress = new brls::Label();
-        this->osdProgress->setFontSize(20);
-        this->osdProgress->setMarginBottom(12);
-        this->addView(this->osdProgress);
+        this->stage = new AudioStageView();
+        this->stage->setGrow(1);
+        this->stage->setQueue(std::move(rows), this->playlistIndex);
+        this->stage->setGlyph(firstGlyph(current.title));
+        this->stage->setHint("cloud/player/hint_audio"_i18n);
+        this->stage->setModes(this->shuffle, (int)this->loopMode);
+        this->stage->setStatus("cloud/player/loading"_i18n);
+        this->addView(this->stage);
 
-        this->loadingLabel = new brls::Label();
-        this->loadingLabel->setFontSize(18);
-        this->loadingLabel->setText("cloud/player/loading"_i18n);
-        this->addView(this->loadingLabel);
-
-        this->hintLabel = new brls::Label();
-        this->hintLabel->setFontSize(16);
-        this->hintLabel->setMarginTop(24);
-        this->hintLabel->setText("cloud/player/hint_audio"_i18n);
-        this->addView(this->hintLabel);
+        // Publish the track so the shell can show its "now playing" overlay
+        // once this page is closed.
+        MusicSession::instance().attach();
+        MusicSession::instance().setTrack(current.title, current.artist,
+                                          this->provider, this->playlist,
+                                          this->playlistIndex);
+        if (this->resumeInPlace) {
+            // mpv keeps playing this track: no seek, the queue cursor starts
+            // on the row that is actually running.
+            this->resumePosition = 0;
+            this->selectedIndex = this->playlistIndex;
+        }
     } else {
-        // No centered overlay at all: the OSD alone carries the status line,
-        // title and progress, so nothing can sit on top of the picture.
-        this->osdPanel = new PlayerOsdPanel(brls::Axis::COLUMN);
-        this->osdPanel->setJustifyContent(brls::JustifyContent::FLEX_END);
-        this->osdPanel->setPadding(30, 44, 20, 44);
+        // A video replaces whatever music was playing in the background.
+        MusicSession::instance().clear();
+        // Clean overlay without any dark gradient: only the title at the top,
+        // the progress bar pinned to the bottom edge and a small status / key
+        // line above it, so the picture stays untouched.
+        this->osdPanel = new brls::Box(brls::Axis::COLUMN);
+        this->osdPanel->setGrow(1);
+        this->osdPanel->setJustifyContent(brls::JustifyContent::SPACE_BETWEEN);
+        this->osdPanel->setAlignItems(brls::AlignItems::STRETCH);
+        this->osdPanel->setPadding(26, 44, 22, 44);
 
         this->osdName = new brls::Label();
         this->osdName->setText(this->file.name);
@@ -355,12 +834,22 @@ PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
         this->osdName->setTextColor(nvgRGBA(255, 255, 255, 255));
         this->osdPanel->addView(this->osdName);
 
+        brls::Box* bottom = new brls::Box(brls::Axis::COLUMN);
+        bottom->setAlignItems(brls::AlignItems::STRETCH);
+
         this->metaLabel = new brls::Label();
-        this->metaLabel->setFontSize(16);
-        this->metaLabel->setMarginTop(4);
+        this->metaLabel->setFontSize(15);
         this->metaLabel->setSingleLine(true);
-        this->metaLabel->setTextColor(nvgRGBA(255, 255, 255, 170));
-        this->osdPanel->addView(this->metaLabel);
+        this->metaLabel->setTextColor(nvgRGBA(255, 255, 255, 185));
+        bottom->addView(this->metaLabel);
+
+        this->hintLabel = new brls::Label();
+        this->hintLabel->setFontSize(13);
+        this->hintLabel->setMarginTop(4);
+        this->hintLabel->setSingleLine(true);
+        this->hintLabel->setTextColor(nvgRGBA(255, 255, 255, 145));
+        this->hintLabel->setText("cloud/player/hint_video"_i18n);
+        bottom->addView(this->hintLabel);
 
         brls::Box* progressRow = new brls::Box(brls::Axis::ROW);
         progressRow->setAlignItems(brls::AlignItems::CENTER);
@@ -384,15 +873,8 @@ PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
         this->durationLabel->setText("--:--");
         progressRow->addView(this->durationLabel);
 
-        this->osdPanel->addView(progressRow);
-
-        this->hintLabel = new brls::Label();
-        this->hintLabel->setFontSize(14);
-        this->hintLabel->setMarginTop(8);
-        this->hintLabel->setSingleLine(true);
-        this->hintLabel->setTextColor(nvgRGBA(255, 255, 255, 140));
-        this->hintLabel->setText("cloud/player/hint_video"_i18n);
-        this->osdPanel->addView(this->hintLabel);
+        bottom->addView(progressRow);
+        this->osdPanel->addView(bottom);
 
         this->osdPanel->setVisibility(brls::Visibility::GONE);
         this->addView(this->osdPanel);
@@ -403,6 +885,12 @@ PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
     this->registerAction(
         "", brls::BUTTON_A,
         [this](brls::View*) -> bool {
+            // Audio: A starts the row the D-pad points at; on the playing row
+            // it toggles pause like everywhere else.
+            if (this->isAudio && this->selectedIndex != this->playlistIndex) {
+                this->playAt(this->selectedIndex);
+                return true;
+            }
             auto& mpv = nxkit::MPVCore::instance();
             if (mpv.isPaused())
                 mpv.resume();
@@ -431,14 +919,20 @@ PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
     this->registerAction(
         "", brls::BUTTON_DOWN,
         [this](brls::View*) -> bool {
-            this->adjustVolume(-5);
+            if (this->isAudio)
+                this->moveSelection(1);
+            else
+                this->adjustVolume(-5);
             return true;
         },
         true, true);
     this->registerAction(
         "", brls::BUTTON_UP,
         [this](brls::View*) -> bool {
-            this->adjustVolume(5);
+            if (this->isAudio)
+                this->moveSelection(-1);
+            else
+                this->adjustVolume(5);
             return true;
         },
         true, true);
@@ -448,9 +942,13 @@ PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
             logDebug("player: exit key, back to list");
             // Remember the position before tearing the player down.
             this->savePosition();
-            auto& mpv = nxkit::MPVCore::instance();
-            mpv.stop();
-            mpv.reset();
+            // Audio is handed over to the background: only the page closes,
+            // mpv keeps decoding. Videos always stop on exit.
+            if (!this->isAudio) {
+                auto& mpv = nxkit::MPVCore::instance();
+                mpv.stop();
+                mpv.reset();
+            }
             brls::Application::popActivity();
             return true;
         },
@@ -481,18 +979,25 @@ PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
             this->showPlaylistMenu();
             return true;
         });
-    // ZL / ZR jump half a minute.
+    // ZL / ZR jump half a minute on video; on the audio page they adjust the
+    // volume, since ↑/↓ move the queue there.
     this->registerAction(
         "", brls::BUTTON_LT,
         [this](brls::View*) -> bool {
-            this->seekBy(-30);
+            if (this->isAudio)
+                this->adjustVolume(-5);
+            else
+                this->seekBy(-30);
             return true;
         },
         true, true);
     this->registerAction(
         "", brls::BUTTON_RT,
         [this](brls::View*) -> bool {
-            this->seekBy(30);
+            if (this->isAudio)
+                this->adjustVolume(5);
+            else
+                this->seekBy(30);
             return true;
         },
         true, true);
@@ -522,6 +1027,14 @@ PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
             [this](brls::View*) -> bool {
                 this->showOsd();
                 this->showAspectMenu();
+                return true;
+            });
+    } else {
+        // Audio: Y toggles shuffle.
+        this->registerAction(
+            "cloud/player/shuffle"_i18n, brls::BUTTON_Y,
+            [this](brls::View*) -> bool {
+                this->toggleShuffle();
                 return true;
             });
     }
@@ -554,16 +1067,38 @@ PlayerPage::~PlayerPage() {
         brls::cancelDelay(this->osdTimer);
         this->osdTimer = 0;
     }
+    if (this->volumeTimer) {
+        brls::cancelDelay(this->volumeTimer);
+        this->volumeTimer = 0;
+    }
     this->savePosition();
 #ifdef __SWITCH__
     brls::Application::getPlatform()->disableScreenDimming(
         false, "media playback", "cloud");
 #endif
+    if (this->isAudio) {
+#ifdef NXKIT_WITH_MPV
+        // Ending on the last track closes the page with mpv stopped: nothing
+        // plays in the background then. Otherwise the session takes over and
+        // advances to the next track when this one ends.
+        if (nxkit::MPVCore::instance().isStopped())
+            MusicSession::instance().clear();
+        else
+            MusicSession::instance().background(this->shuffle,
+                                                (int)this->loopMode);
+#else
+        MusicSession::instance().clear();
+#endif
+    }
 #ifdef NXKIT_WITH_MPV
     auto& mpv = nxkit::MPVCore::instance();
     mpv.getEvent()->unsubscribe(this->eventSub);
-    mpv.stop();
-    mpv.reset();
+    // Music keeps playing after the page is closed, so browsing the library
+    // does not cut the track. Anything that starts a new stream replaces it.
+    if (!this->isAudio) {
+        mpv.stop();
+        mpv.reset();
+    }
 #endif
 }
 
@@ -574,6 +1109,18 @@ void PlayerPage::play() {
     }
 #ifdef NXKIT_WITH_MPV
     if (this->isAudio) {
+        // Reopened from the background overlay: mpv is still decoding this
+        // track, so taking the stream over avoids the silence of resolving the
+        // url and buffering it again. One-shot: switching tracks afterwards
+        // has to load the new stream normally.
+        if (this->resumeInPlace) {
+            this->resumeInPlace = false;
+            auto& mpv = nxkit::MPVCore::instance();
+            if (!mpv.isStopped()) {
+                this->updateOsd();
+                return;
+            }
+        }
         this->playOriginal();
         return;
     }
@@ -653,6 +1200,15 @@ bool PlayerPage::playAt(size_t index) {
     if (index >= this->playlist.size()) return false;
 
     this->playlistIndex = index;
+    this->selectedIndex = index;
+    // The started track leaves the current shuffle round.
+    for (auto it = this->shuffleBag.begin(); it != this->shuffleBag.end();
+         ++it) {
+        if (*it == index) {
+            this->shuffleBag.erase(it);
+            break;
+        }
+    }
     this->file = this->playlist[index];
     // Stamp the drive the file is played from; the player may have been started
     // for a drive that is not the currently active one (recent views).
@@ -689,11 +1245,21 @@ bool PlayerPage::playAt(size_t index) {
 
     if (this->titleLabel) this->titleLabel->setText(this->file.name);
     if (this->osdName) this->osdName->setText(this->file.name);
-    if (this->osdProgress) this->osdProgress->setText("");
     if (this->seekBar) this->seekBar->setProgress(0);
     if (this->elapsedLabel) this->elapsedLabel->setText("00:00");
     if (this->durationLabel) this->durationLabel->setText("--:--");
     if (this->metaLabel) this->metaLabel->setText("");
+    if (this->stage) {
+        this->stage->setIndex(index);
+        this->stage->setGlyph(firstGlyph(describeAudio(this->file.name).title));
+        this->stage->setProgress(0, 0);
+    }
+    if (this->isAudio) {
+        AudioName info = describeAudio(this->file.name);
+        MusicSession::instance().setTrack(info.title, info.artist,
+                                          this->provider, this->playlist,
+                                          index);
+    }
     this->setStatus("cloud/player/loading"_i18n);
     // Keep the bottom panel hidden until the viewer asks for it: showing it
     // here made it flash on every entry.
@@ -704,11 +1270,63 @@ bool PlayerPage::playAt(size_t index) {
 }
 
 bool PlayerPage::playNext() {
+    if (this->shuffle) {
+        // Loop one is handled before this call; otherwise a shuffle round
+        // restarts only in "loop all", so the queue stops after every track
+        // played once when looping is off.
+        const size_t next =
+            this->nextShuffled(this->loopMode == LoopMode::All);
+        if (next >= this->playlist.size()) return false;
+        return this->playAt(next);
+    }
     return this->playAt(this->playlistIndex + 1);
+}
+
+size_t PlayerPage::nextShuffled(bool wrap) {
+    if (this->playlist.size() <= 1) return this->playlist.size();
+    if (this->shuffleBag.empty()) {
+        // A finished round only restarts when wrapping is allowed.
+        if (this->shuffleRoundUsed && !wrap) return this->playlist.size();
+        this->shuffleBag.reserve(this->playlist.size() - 1);
+        for (size_t i = 0; i < this->playlist.size(); i++) {
+            if (i != this->playlistIndex) this->shuffleBag.push_back(i);
+        }
+        std::shuffle(this->shuffleBag.begin(), this->shuffleBag.end(),
+                     audioRng());
+        this->shuffleRoundUsed = true;
+    }
+    const size_t next = this->shuffleBag.back();
+    this->shuffleBag.pop_back();
+    return next;
+}
+
+void PlayerPage::moveSelection(int delta) {
+    if (this->playlist.empty()) return;
+    int next = (int)this->selectedIndex + delta;
+    if (next < 0) next = 0;
+    if (next >= (int)this->playlist.size())
+        next = (int)this->playlist.size() - 1;
+    this->selectedIndex = (size_t)next;
+    if (this->stage) this->stage->setSelection(this->selectedIndex);
+}
+
+void PlayerPage::toggleShuffle() {
+    this->shuffle = !this->shuffle;
+    this->shuffleBag.clear();
+    this->shuffleRoundUsed = false;
+    if (this->stage) this->stage->setModes(this->shuffle, (int)this->loopMode);
+    this->showPlayerMessage(this->shuffle
+                                ? "cloud/player/shuffle_on"_i18n
+                                : "cloud/player/shuffle_off"_i18n);
 }
 
 void PlayerPage::playNextManual() {
     if (this->playlist.empty()) return;
+    if (this->shuffle) {
+        const size_t next = this->nextShuffled(true);
+        if (next < this->playlist.size()) this->playAt(next);
+        return;
+    }
     if (this->playlistIndex + 1 < this->playlist.size()) {
         this->playAt(this->playlistIndex + 1);
         return;
@@ -757,6 +1375,7 @@ void PlayerPage::toggleLoopMode() {
             break;
     }
     brls::Application::notify(this->loopLabel());
+    if (this->stage) this->stage->setModes(this->shuffle, (int)this->loopMode);
     this->showOsd();
     this->updateOsd();
 }
@@ -797,20 +1416,9 @@ void PlayerPage::startUrl(const std::string& url, const std::string& headers) {
     this->loadedOnce = false;
     this->probedUrl = false;
     this->triedHttpFallback = false;
-    auto& mpv = nxkit::MPVCore::instance();
-    mpv.stop();
-    mpv.reset();
-    // Always overwrite, otherwise a previous file's Cookie headers would leak
-    // into the next (header-less) stream. Restore hwdec as well, a previous
-    // file may have fallen back to software decoding.
-    mpv.command_async("set", "hwdec", "auto");
-    // ffmpeg would send mpv's own (Lavf/mpv) User-Agent instead of the one the
-    // provider signed the link with, which makes some CDNs answer 403.
-    std::string userAgent = headerValue(headers, "User-Agent");
-    std::string extraHeaders = headersWithout(headers, "User-Agent");
-    if (!userAgent.empty()) mpv.command_async("set", "user-agent", userAgent);
-    mpv.setHttpHeaders(extraHeaders.empty() ? "" : headersToMpv(extraHeaders));
-    mpv.setUrl(url);
+    // Stops and resets mpv (so a previous file's headers cannot leak), then
+    // applies the provider headers and starts the url.
+    startMpvStream(url, headers);
     // A reload (quality change, software decoding fallback) drops the subtitle
     // track too; queue the local copy so it comes back with the video.
     if (!this->activeSubtitlePath.empty())
@@ -1068,7 +1676,7 @@ void PlayerPage::onMpvEvent(int event) {
                         if (alt.status >= 200 && alt.status < 300)
                             result = alt;
                     }
-                    if (result.status <= 0) return;
+                    if (result.status < 400) return;
                     const std::string text =
                         "cloud/player/error"_i18n + "  HTTP " +
                         std::to_string(result.status);
@@ -1107,13 +1715,13 @@ void PlayerPage::onMpvEvent(int event) {
 
 void PlayerPage::setStatus(const std::string& text) {
     this->statusOverride = !text.empty();
-    // Video: the status replaces the resolution line in the OSD; audio: the
-    // centered title label doubles as the status line.
+    // Video: the status replaces the resolution line in the OSD; audio: it
+    // becomes the state line under the record.
     if (this->metaLabel) {
         this->metaLabel->setText(text);
         return;
     }
-    if (this->loadingLabel) this->loadingLabel->setText(text);
+    if (this->stage) this->stage->setStatus(text);
 }
 
 void PlayerPage::updateOsd() {
@@ -1121,15 +1729,27 @@ void PlayerPage::updateOsd() {
     auto& mpv = nxkit::MPVCore::instance();
 
     if (this->isAudio) {
-        if (!this->osdProgress) return;
-        std::string text = wiliwili::sec2Time((int64_t)mpv.playback_time) +
-                           " / " + wiliwili::sec2Time(mpv.duration);
-        if (this->loopMode != LoopMode::Off)
-            text += "  |  " + this->loopLabel();
-        if (this->playbackSpeed != 1.0)
-            text += "  |  " + speedText(this->playbackSpeed);
-        if (mpv.isPaused()) text += "  |  " + "cloud/player/paused"_i18n;
-        this->osdProgress->setText(text);
+        if (!this->stage) return;
+        const double duration = mpv.duration;
+        const bool running = !mpv.isPaused() && !mpv.isStopped();
+        this->stage->setPlaying(running);
+        this->stage->setProgress(mpv.playback_time, duration);
+        MusicSession::instance().setPlaying(running);
+
+        // A loading / error line set through setStatus wins until it is
+        // cleared; otherwise the stage shows the loop / speed / paused state.
+        if (this->statusOverride) return;
+        std::string text;
+        if (this->loopMode != LoopMode::Off) text = this->loopLabel();
+        if (this->playbackSpeed != 1.0) {
+            if (!text.empty()) text += "  ·  ";
+            text += speedText(this->playbackSpeed);
+        }
+        if (mpv.isPaused()) {
+            if (!text.empty()) text += "  ·  ";
+            text += "cloud/player/paused"_i18n;
+        }
+        this->stage->setStatus(text);
         return;
     }
 
@@ -1185,6 +1805,8 @@ void PlayerPage::seekBy(int64_t seconds) {
 
     if (this->seekBar && mpv.duration > 0)
         this->seekBar->setProgress((float)(target / mpv.duration));
+    if (this->stage && mpv.duration > 0)
+        this->stage->setProgress(target, mpv.duration);
     if (this->elapsedLabel)
         this->elapsedLabel->setText(wiliwili::sec2Time((int64_t)target));
     if (this->durationLabel)
@@ -1193,6 +1815,9 @@ void PlayerPage::seekBy(int64_t seconds) {
     if (this->metaLabel)
         this->metaLabel->setText(seconds > 0 ? "cloud/player/forward"_i18n
                                              : "cloud/player/backward"_i18n);
+    if (this->stage)
+        this->showPlayerMessage(seconds > 0 ? "cloud/player/forward"_i18n
+                                           : "cloud/player/backward"_i18n);
     this->showOsd();
 #else
     (void)seconds;
@@ -1218,11 +1843,60 @@ void PlayerPage::adjustVolume(int delta) {
         mpv.setVolume(value);
         shown = value;
     }
-    this->showPlayerMessage("cloud/player/volume"_i18n + " " +
-                            std::to_string(shown));
+    if (this->isAudio)
+        this->showPlayerMessage("cloud/player/volume"_i18n + " " +
+                                std::to_string(shown));
+    else
+        this->showVolume(shown);
 #else
     (void)delta;
 #endif
+}
+
+void PlayerPage::showVolume(int percent) {
+    this->volumePercent = percent < 0 ? 0 : (percent > 100 ? 100 : percent);
+    this->volumeVisible = true;
+    if (this->volumeTimer) brls::cancelDelay(this->volumeTimer);
+    this->volumeTimer = brls::delay(1400, [this, alive = this->alive] {
+        if (!*alive) return;
+        this->volumeTimer = 0;
+        this->volumeVisible = false;
+    });
+}
+
+/// Vertical meter on the left edge, vertically centred, so the volume change is
+/// readable without covering the middle of the picture.
+void PlayerPage::drawVolume(NVGcontext* vg, float x, float y, float width,
+                            float height) {
+    if (this->isAudio || !this->volumeVisible || this->volumePercent < 0)
+        return;
+
+    const float barWidth = 8.0f;
+    const float barHeight = 190.0f;
+    const float bx = x + 34.0f;
+    const float by = y + (height - barHeight) * 0.5f;
+
+    nvgBeginPath(vg);
+    nvgRoundedRect(vg, bx, by, barWidth, barHeight, barWidth * 0.5f);
+    nvgFillColor(vg, nvgRGBA(255, 255, 255, 54));
+    nvgFill(vg);
+
+    const float level = barHeight * (float)this->volumePercent / 100.0f;
+    if (level > 0.5f) {
+        nvgBeginPath(vg);
+        nvgRoundedRect(vg, bx, by + barHeight - level, barWidth, level,
+                       barWidth * 0.5f);
+        nvgFillColor(vg, nvgRGBA(255, 255, 255, 235));
+        nvgFill(vg);
+    }
+
+    nvgFontFaceId(vg, brls::Application::getDefaultFont());
+    nvgFontSize(vg, 20.0f);
+    nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+    nvgFillColor(vg, nvgRGBA(255, 255, 255, 225));
+    const std::string value = std::to_string(this->volumePercent);
+    nvgText(vg, bx + barWidth + 12.0f, by + barHeight * 0.5f, value.c_str(),
+            nullptr);
 }
 
 void PlayerPage::showOsd(bool autoHide) {
@@ -1249,12 +1923,23 @@ void PlayerPage::showOsd(bool autoHide) {
 }
 
 void PlayerPage::showPlayerMessage(const std::string& text) {
+    const int token = ++this->messageToken;
+    // The audio stage has no hint label: transient feedback ("音量 60") takes
+    // over its state line and falls back to the loop / paused state after a
+    // moment.
+    if (this->stage) {
+        this->setStatus(text);
+        brls::delay(3000, [this, alive = this->alive, token] {
+            if (!*alive || token != this->messageToken) return;
+            this->setStatus("");
+            this->updateOsd();
+        });
+        return;
+    }
     if (!this->hintLabel) return;
-    const std::string hint = this->isAudio ? "cloud/player/hint_audio"_i18n
-                                           : "cloud/player/hint_video"_i18n;
+    const std::string hint = "cloud/player/hint_video"_i18n;
     this->hintLabel->setText(text);
     this->showOsd();
-    const int token = ++this->messageToken;
     brls::delay(3000, [this, alive = this->alive, hint, token] {
         if (!*alive || token != this->messageToken) return;
         if (this->hintLabel) this->hintLabel->setText(hint);
@@ -1806,6 +2491,7 @@ bool PlayerPage::savePosition() {
 void PlayerPage::draw(NVGcontext* vg, float x, float y, float width,
                       float height, brls::Style style,
                       brls::FrameContext* ctx) {
+    // The audio page paints its own immersive backdrop inside AudioStageView.
 #ifdef NXKIT_WITH_MPV
     if (!this->isAudio) {
         auto& mpv = nxkit::MPVCore::instance();
@@ -1816,6 +2502,7 @@ void PlayerPage::draw(NVGcontext* vg, float x, float y, float width,
         if (!mpv.isStopped())
             mpv.draw(brls::Rect(0, 0, (float)brls::Application::contentWidth,
                                 (float)brls::Application::contentHeight));
+        this->drawVolume(vg, x, y, width, height);
     }
 #endif
     brls::Box::draw(vg, x, y, width, height, style, ctx);

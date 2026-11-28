@@ -7,11 +7,16 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "cloud/ui/now_playing_overlay.hpp"
+#include "nxkit/paths.hpp"
+
 #include <mupdf/fitz.h>
+#include <nlohmann/json.hpp>
 
 using namespace brls::literals;
 
@@ -19,10 +24,55 @@ namespace cloud {
 
 namespace {
 
+/// Where the last opened page of each document is remembered.
+const char* kPageStoreFile = "pdf_pages.json";
+
 std::string fileNameOf(const std::string& path) {
     size_t slash = path.find_last_of("/\\");
     return slash == std::string::npos ? path : path.substr(slash + 1);
 }
+
+/** Page (1-based) the user stopped on last time, 0 when unknown. */
+int loadLastPage(const std::string& path) {
+    if (path.empty()) return 0;
+    std::ifstream input(nxkit::dataPath(kPageStoreFile));
+    if (!input.is_open()) return 0;
+    nlohmann::json root = nlohmann::json::parse(input, nullptr, false);
+    if (root.is_discarded() || !root.is_object()) return 0;
+    auto it = root.find(path);
+    if (it == root.end() || !it->is_number_integer()) return 0;
+    return it->get<int>();
+}
+
+/** Remembers `page` (1-based) for `path`. */
+void saveLastPage(const std::string& path, int page) {
+    if (path.empty() || page <= 0) return;
+
+    nlohmann::json root = nlohmann::json::object();
+    {
+        // Scoped: the SD card filesystem refuses the write below while this
+        // handle is still open on the same path.
+        std::ifstream input(nxkit::dataPath(kPageStoreFile));
+        if (input.is_open()) {
+            nlohmann::json stored =
+                nlohmann::json::parse(input, nullptr, false);
+            if (!stored.is_discarded() && stored.is_object())
+                root = std::move(stored);
+        }
+    }
+
+    auto it = root.find(path);
+    if (it != root.end() && it->is_number_integer() &&
+        it->get<int>() == page)
+        return;
+
+    root[path] = page;
+    nxkit::ensureDataDirectory();
+    std::ofstream output(nxkit::dataPath(kPageStoreFile));
+    if (!output.is_open()) return;
+    output << root.dump();
+}
+
 
 /** Renders a single page into an RGBA buffer with a white background. */
 bool renderPage(fz_context* ctx, fz_document* document, int pageNumber,
@@ -217,6 +267,9 @@ PdfViewerPage::PdfViewerPage(std::string path) : path(std::move(path)) {
 
     brls::Theme theme = brls::Application::getTheme();
 
+    // Reopen on the page the user stopped at last time (stored 1-based).
+    this->pageIndex = std::max(0, loadLastPage(this->path) - 1);
+
     this->titleLabel = new brls::Label();
     this->titleLabel->setFontSize(16);
     this->titleLabel->setHeight(22);
@@ -242,6 +295,10 @@ PdfViewerPage::PdfViewerPage(std::string path) : path(std::move(path)) {
     this->hintLabel->setTextColor(theme["cloud/text_secondary"]);
     this->hintLabel->setText("cloud/pdf/hint"_i18n);
     this->addView(this->hintLabel);
+
+    // Background music keeps playing while reading: show the "now playing"
+    // pill here too (R3 returns to the player).
+    attachNowPlayingOverlay(this);
 
     this->registerAction(
         "cloud/pdf/prev"_i18n, brls::BUTTON_LB,
@@ -395,6 +452,7 @@ void PdfViewerPage::goToPage(int page) {
         this->inFlightPage < 0)
         return;
     this->pageIndex = page;
+    saveLastPage(this->path, page + 1);
     this->canvas->setZoom(this->zoom);
     this->requestRender();
 }

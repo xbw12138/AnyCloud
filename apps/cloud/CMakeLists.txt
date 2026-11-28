@@ -110,6 +110,7 @@ nxkit_add_app(cloud
         source/drive/download_manager.cpp
         source/drive/drive_manager.cpp
         source/drive/drive_provider.cpp
+        source/drive/music_session.cpp
         source/drive/quark_drive.cpp
         source/drive/recent_store.cpp
         source/drive/playback_store.cpp
@@ -129,10 +130,13 @@ nxkit_add_app(cloud
         source/pages/image_viewer.cpp
         source/pages/text_reader.cpp
         source/ui/cloud_empty_view.cpp
+        source/ui/now_playing_overlay.cpp
         source/ui/popup.cpp
+        source/util/audio_name.cpp
         source/util/book_text.cpp
         source/util/crypto.cpp
         source/util/file_upload.cpp
+        source/util/http_headers.cpp
         source/util/text_encoding.cpp
         source/util/gbk_table.cpp
         source/util/zip_extract.cpp

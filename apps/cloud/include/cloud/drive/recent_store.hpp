@@ -24,6 +24,12 @@ public:
     /// Adds (or moves) `file` to the front of the list.
     void add(const DriveFile& file);
 
+    /// Drops one entry (matched by id and drive) and persists the list.
+    void remove(const DriveFile& file);
+
+    /// Drops every entry.
+    void clear();
+
 private:
     RecentStore();
 
