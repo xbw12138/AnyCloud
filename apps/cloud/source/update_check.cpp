@@ -99,10 +99,46 @@ void presentUpdateResult(const UpdateInfo& info, bool ok,
         return;
     }
     if (info.available) {
-        std::string text = "cloud/update/found"_i18n + " " + info.version;
-        if (!info.changelog.empty()) text += "\n\n" + info.changelog;
-        text += "\n\n" + "cloud/update/hint"_i18n;
-        brls::Dialog* dialog = new brls::Dialog(text);
+        // The stock text dialog does not constrain its label, so a paragraph
+        // long enough (a changelog) is drawn as one line that runs off the
+        // dialog. Build the content by hand and give the label a real width so
+        // it wraps.
+        brls::Theme theme = brls::Application::getTheme();
+        brls::Box* content = new brls::Box(brls::Axis::COLUMN);
+        content->setWidth(720);
+        content->setPadding(26, 34, 26, 34);
+        content->setAlignItems(brls::AlignItems::STRETCH);
+
+        brls::Label* title = new brls::Label();
+        title->setText("cloud/update/found"_i18n + " " + info.version);
+        title->setFontSize(22);
+        title->setWidthPercentage(100);
+        title->setSingleLine(false);
+        title->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+        content->addView(title);
+
+        if (!info.changelog.empty()) {
+            brls::Label* body = new brls::Label();
+            body->setText(info.changelog);
+            body->setFontSize(16);
+            body->setLineHeight(1.5f);
+            body->setWidthPercentage(100);
+            body->setSingleLine(false);
+            body->setMarginTop(14);
+            content->addView(body);
+        }
+
+        brls::Label* hint = new brls::Label();
+        hint->setText("cloud/update/hint"_i18n);
+        hint->setFontSize(14);
+        hint->setTextColor(theme["cloud/text_secondary"]);
+        hint->setWidthPercentage(100);
+        hint->setSingleLine(false);
+        hint->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+        hint->setMarginTop(16);
+        content->addView(hint);
+
+        brls::Dialog* dialog = new brls::Dialog(content);
         dialog->addButton("cloud/profile/ok"_i18n, [] {});
         dialog->open();
         return;
