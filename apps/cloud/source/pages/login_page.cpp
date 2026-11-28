@@ -11,6 +11,7 @@
 
 #include "cloud/drive/drive_manager.hpp"
 #include "cloud/pages/smb_login_view.hpp"
+#include "cloud/pages/webdav_login_view.hpp"
 #include "nxkit/http_client.hpp"
 #include "nxkit/ui/qr_login_view.hpp"
 
@@ -50,14 +51,17 @@ private:
 LoginPage::LoginPage() {}
 
 brls::View* LoginPage::createContentView() {
-    // SMB has no QR code: the share form plays the role of the scan step.
+    // SMB / WebDAV have no QR code: their forms play the role of the scan step.
     auto provider = DriveManager::instance().current();
-    if (provider && provider->id() == "smb") {
+    if (provider && (provider->id() == "smb" || provider->id() == "webdav")) {
         brls::Box* page = new brls::Box(brls::Axis::COLUMN);
         page->setGrow(1);
         page->setAlignItems(brls::AlignItems::CENTER);
         page->setJustifyContent(brls::JustifyContent::CENTER);
-        page->addView(new SmbLoginView());
+        if (provider->id() == "webdav")
+            page->addView(new WebDavLoginView());
+        else
+            page->addView(new SmbLoginView());
         return page;
     }
 

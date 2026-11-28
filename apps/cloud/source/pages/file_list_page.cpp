@@ -1285,12 +1285,19 @@ void FileListPage::showLoginState() {
     if (this->grid) this->grid->setVisibility(brls::Visibility::GONE);
     this->emptyView->setVisibility(brls::Visibility::VISIBLE);
     bool isSmb = this->provider && this->provider->id() == "smb";
+    bool isWebDav = this->provider && this->provider->id() == "webdav";
     this->emptyView->setContent(
         CloudEmptyView::Mode::Login,
-        isSmb ? "cloud/smb/title"_i18n : "cloud/files/login_title"_i18n,
-        isSmb ? "cloud/smb/user_value"_i18n : "cloud/files/login_desc"_i18n);
+        isSmb ? "cloud/smb/title"_i18n
+              : isWebDav ? "cloud/webdav/title"_i18n
+                         : "cloud/files/login_title"_i18n,
+        isSmb ? "cloud/smb/user_value"_i18n
+              : isWebDav ? "cloud/webdav/url_value"_i18n
+                         : "cloud/files/login_desc"_i18n);
     this->emptyView->setAction(
-        isSmb ? "cloud/smb/configure"_i18n : "cloud/files/login_action"_i18n,
+        isSmb ? "cloud/smb/configure"_i18n
+              : isWebDav ? "cloud/webdav/configure"_i18n
+                         : "cloud/files/login_action"_i18n,
         [] { brls::Application::pushActivity(new LoginPage()); });
     if (this->subtitleLabel)
         this->subtitleLabel->setText("cloud/files/not_signed_in"_i18n);

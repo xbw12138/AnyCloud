@@ -783,6 +783,8 @@ void ProfilePage::applyAccount() {
         this->refreshTile->setVisibility(brls::Visibility::GONE);
         this->accountTile->setTitle(provider->id() == "smb"
                                         ? "cloud/smb/configure"_i18n
+                                    : provider->id() == "webdav"
+                                        ? "cloud/webdav/configure"_i18n
                                         : "cloud/profile/login"_i18n);
         return;
     }
@@ -846,10 +848,13 @@ void ProfilePage::logout() {
     auto provider = DriveManager::instance().current();
     if (!provider) return;
 
-    // The SMB share has no QR step: signing out means configuring the
-    // connection again, so it must not talk about scanning a code.
+    // The SMB share / WebDAV account has no QR step: signing out means
+    // configuring the connection again, so it must not talk about scanning a
+    // code.
     std::string confirm = provider->id() == "smb"
                               ? "cloud/smb/logout_confirm"_i18n
+                          : provider->id() == "webdav"
+                              ? "cloud/webdav/logout_confirm"_i18n
                               : "cloud/profile/logout_confirm"_i18n;
     brls::Dialog* dialog = new brls::Dialog(confirm);
     dialog->addButton("cloud/files/action/cancel"_i18n, []() {});

@@ -942,13 +942,15 @@ PlayerPage::PlayerPage(std::shared_ptr<DriveProvider> provider,
             logDebug("player: exit key, back to list");
             // Remember the position before tearing the player down.
             this->savePosition();
-            // Audio is handed over to the background: only the page closes,
-            // mpv keeps decoding. Videos always stop on exit.
-            if (!this->isAudio) {
-                auto& mpv = nxkit::MPVCore::instance();
-                mpv.stop();
-                mpv.reset();
+            // Music can be left running: the dialog decides whether the stream
+            // is handed to the background or stopped with the page.
+            if (this->isAudio) {
+                this->exitWithChoice();
+                return true;
             }
+            auto& mpv = nxkit::MPVCore::instance();
+            mpv.stop();
+            mpv.reset();
             brls::Application::popActivity();
             return true;
         },
@@ -1078,14 +1080,22 @@ PlayerPage::~PlayerPage() {
 #endif
     if (this->isAudio) {
 #ifdef NXKIT_WITH_MPV
-        // Ending on the last track closes the page with mpv stopped: nothing
-        // plays in the background then. Otherwise the session takes over and
-        // advances to the next track when this one ends.
-        if (nxkit::MPVCore::instance().isStopped())
+        // The page can close in three ways: the queue ran out (nothing left to
+        // play), the user picked "stop" in the exit dialog, or a track is still
+        // running. Only the last one is handed to the background, so a finished
+        // track never leaves a "now playing" overlay behind.
+        const bool finished = this->playbackEnded || this->stopOnExit ||
+                              nxkit::MPVCore::instance().isStopped();
+        if (finished) {
+            if (this->stopOnExit) {
+                nxkit::MPVCore::instance().stop();
+                nxkit::MPVCore::instance().reset();
+            }
             MusicSession::instance().clear();
-        else
+        } else {
             MusicSession::instance().background(this->shuffle,
                                                 (int)this->loopMode);
+        }
 #else
         MusicSession::instance().clear();
 #endif
@@ -1235,6 +1245,8 @@ bool PlayerPage::playAt(size_t index) {
     this->triedSoftwareDec = false;
     this->triedLocalCache = false;
     this->statusOverride = false;
+    // A new track starts: the page is live again.
+    this->playbackEnded = false;
     // Subtitles belong to the video that was playing, not to the new one.
     this->subtitles.clear();
     this->subtitleIndex = -1;
@@ -1702,6 +1714,9 @@ void PlayerPage::onMpvEvent(int event) {
                 return;
             }
             logDebug("player: end of file, back to list");
+            // mpv's idle flag may not have arrived yet, and a closed page would
+            // otherwise hand a silent stream to the background overlay.
+            this->playbackEnded = true;
             brls::Application::popActivity();
             return;
         case MpvEventEnum::UPDATE_PROGRESS:
@@ -2486,6 +2501,31 @@ bool PlayerPage::savePosition() {
 #else
     return false;
 #endif
+}
+
+void PlayerPage::exitWithChoice() {
+    bool running = false;
+#ifdef NXKIT_WITH_MPV
+    running = !this->playbackEnded && !this->stopOnExit &&
+              !nxkit::MPVCore::instance().isStopped();
+#endif
+    // Nothing left to keep: finished, failed or already stopped.
+    if (!running) {
+        this->stopOnExit = true;
+        brls::Application::popActivity();
+        return;
+    }
+
+    brls::Dialog* dialog = new brls::Dialog("cloud/player/background_ask"_i18n);
+    // B in the dialog cancels the exit, which is what "stay" means here.
+    dialog->setCancelable(true);
+    dialog->addButton("cloud/player/background_yes"_i18n,
+                      [] { brls::Application::popActivity(); });
+    dialog->addButton("cloud/player/background_no"_i18n, [this] {
+        this->stopOnExit = true;
+        brls::Application::popActivity();
+    });
+    dialog->open();
 }
 
 void PlayerPage::draw(NVGcontext* vg, float x, float y, float width,

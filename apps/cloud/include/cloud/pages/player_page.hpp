@@ -148,6 +148,9 @@ private:
     void selectAudioTrack(int64_t trackId);
     void retryWithSoftwareDec();
     bool savePosition();
+    /// B on the audio page: the track is still playing, so ask whether it
+    /// should keep going in the background or stop before the page closes.
+    void exitWithChoice();
 
     std::shared_ptr<bool> alive = std::make_shared<bool>(true);
 
@@ -217,6 +220,11 @@ private:
     /// Audio reopened from the background: the stream is still running and
     /// must be taken over instead of reloaded.
     bool resumeInPlace = false;
+    /// The queue ran out and mpv has nothing left to play: closing the page
+    /// must not leave a "now playing" overlay behind.
+    bool playbackEnded = false;
+    /// "Stop playback" was picked in the exit dialog.
+    bool stopOnExit = false;
 
     brls::Label* titleLabel = nullptr;
     /// Audio page: the whole-screen stage that draws the record and the queue.

@@ -191,7 +191,10 @@
     "volume": "Volume",
     "lossless": "Lossless",
     "hint_video": "A Play/Pause  ←/→ Seek  ↑/↓ Volume  L/R Prev/Next  X Loop  - Subtitles/Audio  + Playlist  Y Quality  R3 Aspect  L3 Speed  B Exit",
-    "hint_audio": "A Play/Pause · ↑/↓ Select · ←/→ Seek · L/R Track · ZL/ZR Volume · X Loop · Y Shuffle · B Exit"
+    "hint_audio": "A Play/Pause · ↑/↓ Select · ←/→ Seek · L/R Track · ZL/ZR Volume · X Loop · Y Shuffle · B Back",
+    "background_ask": "Still playing. What should happen when you go back?",
+    "background_yes": "Keep playing",
+    "background_no": "Stop playback"
   },
   "image": {
     "loading": "Loading…",
@@ -395,5 +398,24 @@
     "edit": "Edit",
     "configure": "Set up network share",
     "logout_confirm": "Disconnect this share? You will have to set up the connection again"
+  },
+  "webdav": {
+    "title": "Connect WebDAV",
+    "url": "Address",
+    "url_value": "e.g. https://dav.example.com/dav",
+    "user": "Username",
+    "user_value": "Leave empty for anonymous access",
+    "password": "Password",
+    "password_value": "Not set",
+    "connect": "Connect",
+    "connecting": "Connecting…",
+    "required": "The server address is required",
+    "failed": "Connection failed",
+    "auth_failed": "Wrong username or password",
+    "success": "Connected",
+    "hint": "↑/↓ Select  A Edit  X Connect  B Back",
+    "edit": "Edit",
+    "configure": "Set up WebDAV",
+    "logout_confirm": "Disconnect this WebDAV account? You will have to enter the address and account again"
   }
 }

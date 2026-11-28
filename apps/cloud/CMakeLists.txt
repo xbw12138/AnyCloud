@@ -117,8 +117,11 @@ nxkit_add_app(cloud
         source/drive/smb_bridge.cpp
         source/drive/smb_drive.cpp
         source/drive/smb_session.cpp
+        source/drive/webdav_drive.cpp
+        source/drive/webdav_session.cpp
         source/pages/login_page.cpp
         source/pages/smb_login_view.cpp
+        source/pages/webdav_login_view.cpp
         source/pages/file_list_page.cpp
         source/pages/downloads_page.cpp
         source/pages/local_dir_page.cpp

@@ -191,7 +191,10 @@
     "volume": "音量",
     "lossless": "无损",
     "hint_video": "A 播放/暂停  ←/→ 快退/快进  ↑/↓ 音量  L/R 上一集/下一集  X 循环  - 字幕/音轨  + 播放目录  Y 清晰度  R3 画面比例  L3 倍速  B 退出",
-    "hint_audio": "A 播放/暂停 · ↑/↓ 选曲 · ←/→ 快退快进 · L/R 切歌 · ZL/ZR 音量 · X 循环 · Y 随机 · B 退出"
+    "hint_audio": "A 播放/暂停 · ↑/↓ 选曲 · ←/→ 快退快进 · L/R 切歌 · ZL/ZR 音量 · X 循环 · Y 随机 · B 返回",
+    "background_ask": "歌曲还在播放，返回后如何处理？",
+    "background_yes": "后台播放",
+    "background_no": "退出播放"
   },
   "image": {
     "loading": "加载中…",
@@ -395,5 +398,24 @@
     "edit": "编辑",
     "configure": "配置网络共享",
     "logout_confirm": "确认退出连接？退出后需要重新配置连接"
+  },
+  "webdav": {
+    "title": "连接 WebDAV",
+    "url": "服务器地址",
+    "url_value": "如 https://dav.example.com/dav",
+    "user": "用户名",
+    "user_value": "留空表示匿名访问",
+    "password": "密码",
+    "password_value": "未设置",
+    "connect": "连接",
+    "connecting": "正在连接…",
+    "required": "请填写服务器地址",
+    "failed": "连接失败",
+    "auth_failed": "用户名或密码不正确",
+    "success": "连接成功",
+    "hint": "↑/↓ 选择  A 编辑  X 连接  B 返回",
+    "edit": "编辑",
+    "configure": "配置 WebDAV",
+    "logout_confirm": "确认退出连接？退出后需要重新填写地址与账号"
   }
 }

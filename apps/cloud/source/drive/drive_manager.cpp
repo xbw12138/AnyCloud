@@ -9,6 +9,7 @@
 #include "cloud/drive/drive115.hpp"
 #include "cloud/drive/quark_drive.hpp"
 #include "cloud/drive/smb_drive.hpp"
+#include "cloud/drive/webdav_drive.hpp"
 #include "nxkit/auth_store.hpp"
 
 namespace cloud {
@@ -54,6 +55,7 @@ void DriveManager::init() {
     registerProvider(std::make_shared<Drive115>());
     registerProvider(std::make_shared<BaiduDrive>());
     registerProvider(std::make_shared<SmbDrive>());
+    registerProvider(std::make_shared<WebDavDrive>());
     for (auto& provider : providerList) provider->loadCredentials();
 
     // Keep the drive the user picked last time.
